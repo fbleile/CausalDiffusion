@@ -151,6 +151,7 @@ class KDSMixin(SDE, ABC):
         key,
         x,
         targets=None,
+        marg_indeps=None,
         bandwidth=5.0,
         estimator="linear",
         learning_rate=0.003,
@@ -186,6 +187,10 @@ class KDSMixin(SDE, ABC):
                 interventional datasets, you can provide ``targets[0, :] == 0``
                 and ``targets[1:, :] == 1``, which does not mask the
                 intervention parameters for any variables.
+            marg_indeps (ndarray, optional): list of length m for multiple data
+                sets with each element is list of 2-tuples of known marginal
+                independencies provided as 2-tuples of indices aligned with
+                the indput ``x``.
             bandwidth (float, optional): Bandwidth of the RBF kernel.
             estimator (str, optional): Estimator for the KDS loss. Options:
                 ``u-statistic``, ``v-statistic``, ``linear`` (Default:
@@ -221,7 +226,7 @@ class KDSMixin(SDE, ABC):
 
         # initialize parameters and load to device (replicate across devices)
         key, subk = random.split(key)
-        param = self.init_param(subk, self.n_vars)
+        param = self.init_param(subk, self.n_vars, marg_indeps=marg_indeps)
 
         key, subk = random.split(key)
         intv_param = self.init_intv_param(subk, self.n_vars, n_envs=n_envs, targets=targets,

@@ -6,7 +6,7 @@ import jax.numpy as jnp
 from stadion.parameters import ModelParameters, InterventionParameters
 from stadion.sde import SDE
 from stadion.inference import KDSMixin
-from stadion.utils import to_diag, tree_global_norm, tree_init_normal
+from stadion.utils import to_diag, tree_global_norm, tree_init_normal, marg_indeps_to_indices
 
 
 class LinearSDE(KDSMixin, SDE):
@@ -20,6 +20,10 @@ class LinearSDE(KDSMixin, SDE):
     Args:
         sparsity_regularizer (str, optional): Type of sparsity regularizer to use.
             Implemented are: ``outgoing,``ingoing``,``both`.`
+        dependency_regularizer: (str, optional) decides on the method to penalize dependence.
+            ``NO TREKS,``Non-Structural``,``both``.
+        no_neighbors: (bool, optional) masks dependency of functions for
+            ``independent`` variables.
         sde_kwargs (dict, optional): any keyword arguments passed to ``SDE`` superclass.
 
     """
@@ -27,6 +31,8 @@ class LinearSDE(KDSMixin, SDE):
     def __init__(
         self,
         sparsity_regularizer="both",
+        dependency_regularizer="both",
+        no_neighbors=False,
         sde_kwargs=None,
     ):
 
@@ -34,9 +40,11 @@ class LinearSDE(KDSMixin, SDE):
         SDE.__init__(self, **sde_kwargs)
 
         self.sparsity_regularizer = sparsity_regularizer
+        self.dependency_regularizer = dependency_regularizer
+        self.no_neighbors = no_neighbors
 
 
-    def init_param(self, key, d, scale=1e-6, fix_speed_scaling=True):
+    def init_param(self, key, d, scale=1e-6, fix_speed_scaling=True, marg_indeps=None):
         """
         Samples random initialization of the SDE model parameters.
         See :func:`~stadion.inference.KDSMixin.init_param`.
@@ -47,13 +55,30 @@ class LinearSDE(KDSMixin, SDE):
             "log_noise_scale": -2 * jnp.ones((d,)),
         }
         param = tree_init_normal(key, shape, scale=scale)
-
+        
+        diag_idx = jnp.diag_indices(d)
+        marg_row_idx, marg_col_idx = marg_indeps_to_indices(d, marg_indeps)
+        marg_indeps_idx = jnp.stack([marg_row_idx, marg_col_idx], axis=1)
+        # Convert diag_idx (tuple of arrays) to a suitable format for concatenation
+        diag_idx_merged = jnp.stack(diag_idx, axis=1)  # Convert to 2D array with shape (d, 2)
+        
+        # Merge the index sets
+        idx_merged = jnp.concatenate([diag_idx_merged, marg_indeps_idx], axis=0)
+        
+        # Merge the values
+        merged_values = jnp.concatenate([jnp.full((diag_idx_merged.shape[0],), -1.0), jnp.full((marg_indeps_idx.shape[0],), 0.0)])
+        
         if fix_speed_scaling:
             return ModelParameters(
                 parameters=param,
-                fixed={"weights": jnp.diag_indices(d)},
-                fixed_values={"weights": -1.0},
+                fixed={"weights": tuple(array.astype(int) for array in idx_merged.T)},
+                fixed_values={"weights": merged_values},
             )
+            # return ModelParameters(
+            #     parameters=param,
+            #     fixed={"weights": jnp.diag_indices(d)},
+            #     fixed_values={"weights": -1.0},
+            # )
         else:
             return ModelParameters(
                 parameters=param,

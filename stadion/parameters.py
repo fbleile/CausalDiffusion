@@ -127,6 +127,7 @@ class ModelParameters(Parameters):
                     value = self._fixed_values[k]
                 else:
                     raise ValueError(f"`fixed_values` must be a number or a dictionary containing the keys of `fixed`.")
+                print(new[k])
                 new[k] = new[k].at[idx].set(value)
             return new
 
@@ -199,3 +200,25 @@ class InterventionParameters(Parameters):
 
             return jax.tree_map(masker, tree, targets, values, axes)
 
+# class MarginalIndepParameter():
+#     """
+#     Container for dictionary of intervention parameters that excludes known intervention
+#     targets from the learnable parameters and provides functionality for masking the
+#     parameters based on the known intervention targets.
+
+#     Args:
+#         marg_indeps: list of marginal independence statements. E.g. [(1,3),(2,3), ]
+#         dependence_regularizer (str, optional): Type of dependence regularizer to use.
+#                     Implemented are: ``NO TREKS,``Non-Structural``,``both``.
+#     """
+#     def __init__(self, marg_indeps, dependence_regularizer="both"):
+#         self.marg_indeps = marg_indeps
+#         self.dependence_regularizer = dependence_regularizer
+
+
+#     def __repr__(self):
+#         descr = f"{self.__class__.__name__}"
+#         if self.marg_indeps is not None:
+#             descr += f"\nwith targets: {pprint.pformat(self.marg_indeps)}"
+#         descr += f"\n{pprint.pformat(self.dependence_regularizer)}"
+#         return descr

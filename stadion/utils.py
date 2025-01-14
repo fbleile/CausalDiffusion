@@ -131,3 +131,23 @@ def variance_initialization(key, shape, scale=1.0, mode='fan_in', distribution='
 
     else:
         raise KeyError(f"Unknown distribution initialization: {distribution}")
+
+def marg_indeps_to_adj_mat(d, marg_indeps):
+    adj_matrix = jnp.zeros((d, d), dtype=int)
+    if marg_indeps != None:
+        for env in marg_indeps:
+            adj_matrix[tuple(zip(*env))] = 1
+    return adj_matrix
+
+def marg_indeps_to_indices(d, marg_indeps):
+    if marg_indeps == None:
+        return jnp.array([]), jnp.array([])
+    rows, cols = zip(*[edge for env in marg_indeps for edge in env])
+    return jnp.array(rows), jnp.array(cols)
+
+def merge_indices(groups1, groups2):
+    rows1, cols1 = groups1
+    rows2, cols2 = groups2
+    merged_rows = jnp.concatenate([rows1, rows2])
+    merged_cols = jnp.concatenate([cols1, cols2])
+    return (merged_rows, merged_cols)
