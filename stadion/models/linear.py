@@ -2,11 +2,14 @@ import functools
 
 from jax import vmap
 import jax.numpy as jnp
+from scipy.linalg import solve_continuous_lyapunov
 
 from stadion.parameters import ModelParameters, InterventionParameters
 from stadion.sde import SDE
 from stadion.inference import KDSMixin
-from stadion.utils import to_diag, tree_global_norm, tree_init_normal, marg_indeps_to_indices
+from stadion.utils import to_diag, tree_global_norm, tree_init_normal, \
+    marg_indeps_to_indices, is_hurwitz_stable, get_one_hot_index
+from stadion.notreks import notreks_loss
 
 
 class LinearSDE(KDSMixin, SDE):
@@ -21,7 +24,7 @@ class LinearSDE(KDSMixin, SDE):
         sparsity_regularizer (str, optional): Type of sparsity regularizer to use.
             Implemented are: ``outgoing,``ingoing``,``both`.`
         dependency_regularizer: (str, optional) decides on the method to penalize dependence.
-            ``NO TREKS,``Non-Structural``,``both``.
+            ``NO TREKS,``Non-Structural``,``both``, ``None``.
         no_neighbors: (bool, optional) masks dependency of functions for
             ``independent`` variables.
         sde_kwargs (dict, optional): any keyword arguments passed to ``SDE`` superclass.
@@ -31,7 +34,7 @@ class LinearSDE(KDSMixin, SDE):
     def __init__(
         self,
         sparsity_regularizer="both",
-        dependency_regularizer="both",
+        dependency_regularizer="None",
         no_neighbors=False,
         sde_kwargs=None,
     ):
@@ -41,7 +44,9 @@ class LinearSDE(KDSMixin, SDE):
 
         self.sparsity_regularizer = sparsity_regularizer
         self.dependency_regularizer = dependency_regularizer
+        self.notreks_loss = notreks_loss(self.f, self.sigma) if dependency_regularizer in ("both", "NO TREKS") else None
         self.no_neighbors = no_neighbors
+        self.marg_indeps = None
 
 
     def init_param(self, key, d, scale=1e-6, fix_speed_scaling=True, marg_indeps=None):
@@ -56,8 +61,10 @@ class LinearSDE(KDSMixin, SDE):
         }
         param = tree_init_normal(key, shape, scale=scale)
         
+        self.marg_indeps = marg_indeps
+        
         diag_idx = jnp.diag_indices(d)
-        marg_row_idx, marg_col_idx = marg_indeps_to_indices(d, marg_indeps)
+        marg_row_idx, marg_col_idx = marg_indeps_to_indices(self.marg_indeps)
         marg_indeps_idx = jnp.stack([marg_row_idx, marg_col_idx], axis=1)
         # Convert diag_idx (tuple of arrays) to a suitable format for concatenation
         diag_idx_merged = jnp.stack(diag_idx, axis=1)  # Convert to 2D array with shape (d, 2)
@@ -68,17 +75,24 @@ class LinearSDE(KDSMixin, SDE):
         # Merge the values
         merged_values = jnp.concatenate([jnp.full((diag_idx_merged.shape[0],), -1.0), jnp.full((marg_indeps_idx.shape[0],), 0.0)])
         
-        if fix_speed_scaling:
+        if fix_speed_scaling and self.no_neighbors:
             return ModelParameters(
                 parameters=param,
                 fixed={"weights": tuple(array.astype(int) for array in idx_merged.T)},
                 fixed_values={"weights": merged_values},
             )
-            # return ModelParameters(
-            #     parameters=param,
-            #     fixed={"weights": jnp.diag_indices(d)},
-            #     fixed_values={"weights": -1.0},
-            # )
+        elif fix_speed_scaling:
+            return ModelParameters(
+                parameters=param,
+                fixed={"weights": diag_idx},
+                fixed_values={"weights": -1.0},
+            )
+        elif self.no_neighbors:
+            return ModelParameters(
+                parameters=param,
+                fixed={"weights": marg_indeps_idx},
+                fixed_values={"weights": 0.0},
+            )
         else:
             return ModelParameters(
                 parameters=param,
@@ -137,8 +151,8 @@ class LinearSDE(KDSMixin, SDE):
         # intervention: shift f(x) by scalar
         # [d,]
         if intv_param is not None:
+            # print(f'intv_param {intv_param["shift"].shape}')
             f_vec += intv_param["shift"]
-
         assert x.shape == f_vec.shape
         return f_vec
 
@@ -210,7 +224,6 @@ class LinearSDE(KDSMixin, SDE):
         lasso = tree_global_norm(group_lasso_terms_j, p=1.0) / d
         return lasso
 
-
     def regularize_sparsity(self, param):
         """
         Sparsity regularization.
@@ -225,6 +238,56 @@ class LinearSDE(KDSMixin, SDE):
                 + LinearSDE._regularize_outgoing(param)
         else:
             raise ValueError(f"Unknown regularizer `{self.regularize_sparsity}`")
+        return reg
+    
+    @staticmethod
+    def regularize_dependence_non_structural(self, marg_indeps, param, intv_param):
+        M = param["weights"]
+        if not is_hurwitz_stable(M):
+            return 0
+        
+        d = M.shape[0]
+        
+        # compute sigma(x)
+        c = jnp.exp(param["log_noise_scale"])
+        sig_mat = to_diag(jnp.ones_like(d)) * c
+        assert sig_mat.shape == (d, d)
+
+        # intervention: scale sigma by scalar
+        # [d,]
+        if intv_param is not None:
+            scale = jnp.exp(intv_param["log_scale"])
+            sig_mat = jnp.einsum("...ab,a->...ab", sig_mat, scale)
+        
+        # Compute the stationary covariance matrix Γ by solving the Lyapunov equation
+        Gamma = solve_continuous_lyapunov(M, -sig_mat @ sig_mat.T)
+        
+        pen = 0
+        for i, j in marg_indeps:
+            if Gamma[i, j]:
+                pen += (Gamma[i, j] / (Gamma[i,i] * Gamma[j,j]))**2
+        return pen
+    
+    @staticmethod
+    def regularize_dependence_no_treks(loss, x, marg_indeps, param, intv_param):
+        assert notreks_loss != None
+        # jnp.array([[1.,2.,3.,4.,5.],[1.,2.,3.,4.,5.]])
+        dep_loss = loss(x, marg_indeps, param, intv_param)
+        return dep_loss
+    
+    def regularize_dependence(self, x, marg_indeps, param, intv_param):
+        # ``NO TREKS,``Non-Structural``,``both``, ``None``.
+        if self.dependency_regularizer == "None":
+            return 0
+        elif self.dependency_regularizer == "NO TREKS":
+            reg = LinearSDE.regularize_dependence_no_treks(self.notreks_loss, x, marg_indeps, param, intv_param)
+        elif self.dependency_regularizer == "Non-Structural":
+            reg = LinearSDE.regularize_dependence_non_structural(marg_indeps, param, intv_param)
+        elif self.dependency_regularizer == "both":
+            reg = LinearSDE.regularize_dependence_non_structural(marg_indeps, param, intv_param)\
+                + LinearSDE.regularize_dependence_no_treks(self.notreks_loss, x, marg_indeps, param, intv_param)
+        else:
+            raise ValueError(f"Unknown dependence regularizer `{self.dependency_regularizer}`")
         return reg
 
 

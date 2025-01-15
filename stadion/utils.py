@@ -139,11 +139,10 @@ def marg_indeps_to_adj_mat(d, marg_indeps):
             adj_matrix[tuple(zip(*env))] = 1
     return adj_matrix
 
-def marg_indeps_to_indices(d, marg_indeps):
+def marg_indeps_to_indices(marg_indeps):
     if marg_indeps == None:
         return jnp.array([]), jnp.array([])
-    rows, cols = zip(*[edge for env in marg_indeps for edge in env])
-    return jnp.array(rows), jnp.array(cols)
+    return marg_indeps[..., 0].flatten(), marg_indeps[..., 1].flatten()
 
 def merge_indices(groups1, groups2):
     rows1, cols1 = groups1
@@ -151,3 +150,38 @@ def merge_indices(groups1, groups2):
     merged_rows = jnp.concatenate([rows1, rows2])
     merged_cols = jnp.concatenate([cols1, cols2])
     return (merged_rows, merged_cols)
+
+def is_hurwitz_stable(A):
+    """
+    Checks if a given square matrix A is stable.
+
+    Stability condition:
+        All eigenvalues of A must have negative real parts.
+
+    Parameters:
+        A (numpy.ndarray): The square matrix to check.
+
+    Returns:
+        bool: True if the matrix is stable, False otherwise.
+    """
+    eigenvalues = jnp.linalg.eigvals(A)
+    return jnp.all(jnp.real(eigenvalues) < 0)
+
+def get_one_hot_index(vector):
+    """
+    Finds the index of the 'hot' (1-valued) element in a one-hot encoded vector.
+
+    Parameters:
+        vector (numpy.ndarray): The one-hot encoded vector.
+
+    Returns:
+        int: The index of the 'hot' element.
+        None: If the vector is not a valid one-hot encoded vector.
+    """
+    # Check if the input is a valid one-hot encoded vector
+    if jnp.sum(vector) != 1 or not jnp.all((vector == 0) | (vector == 1)):
+        raise ValueError(f"Invalid one-hot indicator `{get_one_hot_index}`")
+        return None  # Not a valid one-hot encoded vector
+
+    # Find the index of the 'hot' element
+    return jnp.argmax(vector)

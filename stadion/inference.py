@@ -114,6 +114,20 @@ class KDSMixin(SDE, ABC):
         pass
 
 
+    @abstractmethod
+    def regularize_dependence(self, param, intv_param, env_indicator):
+        """
+        Dependence regularization term to penalize marginal dependencies of the variables in the system of SDEs.
+
+        Args:
+            param (pytree): SDE model parameters
+
+        Returns:
+            scalar value of the regularization penalty
+        """
+        pass
+
+
 
     @staticmethod
     def _format_input_data(x, targets):
@@ -253,6 +267,9 @@ class KDSMixin(SDE, ABC):
             select = lambda leaf: jnp.einsum("e,e...", batch_.env_indicator, leaf)
             intv_param_ = tree_map(select, intv_param_)
             intv_param_.targets = tree_map(select, intv_param_.targets)
+            
+            marg_indeps_ = tree_map(select, self.marg_indeps)
+            # print(f'marg_indeps selected: {marg_indeps_}')
 
             # compute mean KDS loss over environments
             loss = loss_fun(batch_.x, param_, intv_param_)
@@ -262,9 +279,11 @@ class KDSMixin(SDE, ABC):
             # scale by variables to be less-tuning sensitive w.r.t. to dimension
             reg_penalty = reg * self.regularize_sparsity(param_) / self.n_vars
             assert reg_penalty.ndim == 0
+            
+            dep_penalty = reg * self.regularize_dependence(batch_.x, marg_indeps_, param_, intv_param_)
 
             # return loss, aux info dict
-            l = loss + reg_penalty
+            l = loss + reg_penalty + dep_penalty
             return l, dict(kds_loss=loss)
 
         value_and_grad =  jax.value_and_grad(objective_fun, 0, has_aux=True)

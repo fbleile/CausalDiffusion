@@ -1,35 +1,166 @@
 from jax import random, numpy as jnp
+import jax
+from jax import numpy as jnp, random, tree_map
 from stadion.models import LinearSDE
 from pprint import pprint
+import networkx as nx
+
+import matplotlib.pyplot as plt
+
+from stadion.notreks import notreks_loss
+
+def generate_acyclic_graph(d, sparsity, key):
+    """
+    Generates a random directed acyclic graph (DAG).
+
+    Args:
+        d (int): Number of variables (nodes).
+        sparsity (float): Fraction of possible edges to include (0 to 1).
+        key (jax.random.PRNGKey): Random key for reproducibility.
+        seed (int, optional): Random seed for key initialization.
+
+    Returns:
+        networkx.DiGraph: A directed acyclic graph.
+    """
+    if not 0 <= sparsity <= 1:
+        raise ValueError("Sparsity must be between 0 and 1.")
+
+    dag = nx.DiGraph()
+
+    # Add nodes
+    dag.add_nodes_from(range(d))
+
+    # Add edges while ensuring acyclicity
+    for i in range(d):
+        for j in range(i + 1, d):  # Only consider edges from lower to higher indices
+            # Split the key to get a new subkey for each iteration
+            key, subkey = jax.random.split(key)
+            random_value = jax.random.uniform(subkey)  # Random value in [0, 1)
+
+            if random_value < sparsity:
+                key, weight_key = jax.random.split(key)
+                weight = jax.random.uniform(weight_key, minval=-1.0, maxval=1.0)  # Random weight between -1 and 1
+                dag.add_edge(i, j, weight=weight)
+
+    return dag
+
+
+def sample_scm(dag, n, key, noise_dist="gaussian", noise_params=None, shift_intv = None):
+    """
+    Samples from a Structural Causal Model (SCM) defined by a DAG.
+
+    Args:
+        dag (networkx.DiGraph): A directed acyclic graph defining variable dependencies.
+        n (int): Number of samples to generate.
+        key (jax.random.PRNGKey): JAX random key for sampling.
+        noise_dist (str): Type of noise ("gaussian" or "custom").
+        noise_params (dict, optional): Parameters for the noise distribution.
+
+    Returns:
+        jnp.ndarray: Samples of shape (n, d) where d is the number of nodes in the DAG.
+    """
+    # Validate DAG
+    if not nx.is_directed_acyclic_graph(dag):
+        raise ValueError("The input graph must be a directed acyclic graph (DAG).")
+    
+    # Topological sort of nodes for sampling in the correct order
+    sorted_nodes = list(nx.topological_sort(dag))
+    d = len(sorted_nodes)
+
+    # Initialize data matrix
+    samples = jnp.zeros((n, d))
+
+    # Default noise parameters for Gaussian
+    if noise_dist == "gaussian" and noise_params is None:
+        noise_params = {"mean": 0.0, "std": 1.0}
+
+    # Generate samples
+    for idx, node in enumerate(sorted_nodes):
+        parents = list(dag.predecessors(node))
+
+        # Compute the value of the node based on its parents
+        if parents:
+            parent_indices = [sorted_nodes.index(p) for p in parents]
+            weights = [dag.edges[(p, node)]["weight"] for p in parents]
+            contribution = jnp.sum(samples[:, parent_indices] * jnp.array(weights), axis=1)
+        else:
+            contribution = 0.0
+
+        # Add noise
+        if noise_dist == "gaussian":
+            key, subkey = jax.random.split(key)
+            noise = jax.random.normal(subkey, shape=(n,)) * noise_params["std"] + noise_params["mean"]
+        elif noise_dist == "custom" and callable(noise_params.get("sample")):
+            noise = noise_params["sample"](key, n)
+        else:
+            raise ValueError("Unsupported noise distribution or missing parameters.")
+        shift_intv_ = 0 if shift_intv == None else shift_intv[idx]
+        samples = samples.at[:, idx].set(contribution + noise + shift_intv_)
+
+    return samples
+
+def plot_dag(dag):
+    """
+    Plots a directed acyclic graph (DAG).
+
+    Args:
+        dag (networkx.DiGraph): The directed acyclic graph.
+    """
+    pos = nx.spring_layout(dag)  # You can also use other layouts like circular_layout
+    plt.figure(figsize=(8, 6))  # Adjust the size as needed
+    nx.draw(dag, pos, with_labels=True, node_size=2000, node_color="lightblue", font_size=10, font_weight="bold", arrows=True)
+    plt.title("Directed Acyclic Graph (DAG)")
+    plt.show()
 
 
 if __name__ == "__main__":
 
-    key = random.PRNGKey(0)
+    key = random.PRNGKey(1)
     n, d = 1000, 5
 
-    # generate a dataset
-    key, subk = random.split(key)
-    w = random.normal(subk, shape=(d, d))
+    # # generate a dataset
+    # key, subk = random.split(key)
+    # w = random.normal(subk, shape=(d, d))
 
-    key, subk = random.split(key)
-    data = random.normal(subk, shape=(n, d)) @ w
+    # key, subk = random.split(key)
+    # data = random.normal(subk, shape=(n, d)) @ w
 
     # sample two more datasets with shift interventions
     a, targets_a =  3, jnp.array([0, 1, 0, 0, 0])
     b, targets_b = -5, jnp.array([0, 0, 0, 1, 0])
 
-    key, subk_0, subk_1 = random.split(key, 3)
-    data_a = (random.normal(subk_0, shape=(n, d)) + a * targets_a) @ w
-    data_b = (random.normal(subk_1, shape=(n, d)) + b * targets_b) @ w
+    # key, subk_0, subk_1 = random.split(key, 3)
+    # data_a = (random.normal(subk_0, shape=(n, d)) + a * targets_a) @ w
+    # data_b = (random.normal(subk_1, shape=(n, d)) + b * targets_b) @ w
+    
+    # Generate a random DAG
+    sparsity = 0.3
+    key, subk = random.split(key)
+    dag = generate_acyclic_graph(d, sparsity, subk)
+    
+    # plot_dag(dag)
+    
+    key, subk = random.split(key)
+    data = sample_scm(dag, n, subk, noise_dist="gaussian")
+    key, subk = random.split(key)
+    data_a = sample_scm(dag, n, key, noise_dist="gaussian", shift_intv = a * targets_a)
+    key, subk = random.split(key)
+    data_b = sample_scm(dag, n, key, noise_dist="gaussian", shift_intv = b * targets_b)
+    
+    marg_indeps = jnp.array([[(0,1), (0,2), (0,3)],[(0,1), (0,2), (0,3)],[(0,1), (0,2), (0,3)]])
 
     # fit stationary diffusion model
-    model = LinearSDE()
+    model = LinearSDE(
+            dependency_regularizer="NO TREKS",
+            no_neighbors=True
+        )
     key, subk = random.split(key)
     model.fit(
         subk,
         [data, data_a, data_b],
         targets=[jnp.zeros(d), targets_a, targets_b],
+        # steps=1000,
+        marg_indeps=marg_indeps,
     )
 
     # get inferred model and intervention parameters
@@ -46,3 +177,12 @@ if __name__ == "__main__":
     print("Means of observed and generated data under 1st intervention: ")
     print(data_a.mean(0))
     print(x_pred_a.mean(0))
+    
+    # env = jax.nn.one_hot(0, 3)
+    # select = lambda leaf: jnp.einsum("e,e...", env, leaf)
+    # intv_param_ = tree_map(select, intv_param)
+    
+    # loss_func = notreks_loss(model.f, model.sigma)
+    # # jnp.array([[1.,2.,3.,4.,5.],[1.,2.,3.,4.,5.]])
+    # dep_loss = loss_func(data, marg_indeps[0], param, intv_param_)
+    # print(dep_loss)
