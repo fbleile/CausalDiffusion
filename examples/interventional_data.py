@@ -7,7 +7,42 @@ import networkx as nx
 
 import matplotlib.pyplot as plt
 
-from stadion.notreks import notreks_loss
+from stadion.notreks import notreks_loss, no_treks
+from stadion.metrics import calculate_distances
+
+from itertools import combinations
+
+def build_trek_graph(graph):
+    """
+    Constructs the trek graph for a given AG.
+    
+    Args:
+        graph (nx.DiGraph): A directed graph.
+        
+    Returns:
+        trek_graph (nx.Graph): The trek graph (undirected).
+        no_trek_nodes (list): List of pairs of nodes with no treks between them.
+    """
+    
+    # Step 1: Compute ancestors for each node
+    ancestors = {node: set(nx.ancestors(graph, node)) | {node} for node in graph.nodes}
+    
+    # Step 2: Build the trek graph
+    trek_graph = nx.Graph()
+    trek_graph.add_nodes_from(graph.nodes)
+    
+    for u, v in combinations(graph.nodes, 2):  # Iterate over all pairs of nodes
+        if ancestors[u] & ancestors[v]:  # Check if they share a common ancestor
+            trek_graph.add_edge(u, v)
+    
+    # Step 3: Find pairs of nodes with no treks
+    no_trek_nodes = [
+        (u, v)
+        for u, v in combinations(graph.nodes, 2)
+        if not trek_graph.has_edge(u, v)
+    ]
+    
+    return trek_graph, no_trek_nodes
 
 def generate_acyclic_graph(d, sparsity, key):
     """
@@ -99,16 +134,16 @@ def sample_scm(dag, n, key, noise_dist="gaussian", noise_params=None, shift_intv
 
     return samples
 
-def plot_dag(dag):
+def plot_dag(graph):
     """
-    Plots a directed acyclic graph (DAG).
+    Plots a networkx graph.
 
     Args:
-        dag (networkx.DiGraph): The directed acyclic graph.
+        graph (networkx.DiGraph): The graph.
     """
-    pos = nx.spring_layout(dag)  # You can also use other layouts like circular_layout
+    pos = nx.spring_layout(graph)  # You can also use other layouts like circular_layout
     plt.figure(figsize=(8, 6))  # Adjust the size as needed
-    nx.draw(dag, pos, with_labels=True, node_size=2000, node_color="lightblue", font_size=10, font_weight="bold", arrows=True)
+    nx.draw(graph, pos, with_labels=True, node_size=2000, node_color="lightblue", font_size=10, font_weight="bold", arrows=True)
     plt.title("Directed Acyclic Graph (DAG)")
     plt.show()
 
@@ -138,6 +173,8 @@ if __name__ == "__main__":
     key, subk = random.split(key)
     dag = generate_acyclic_graph(d, sparsity, subk)
     
+    trek_graph, no_trek_nodes = build_trek_graph(dag)
+    
     # plot_dag(dag)
     
     key, subk = random.split(key)
@@ -147,19 +184,19 @@ if __name__ == "__main__":
     key, subk = random.split(key)
     data_b = sample_scm(dag, n, key, noise_dist="gaussian", shift_intv = b * targets_b)
     
-    marg_indeps = jnp.array([[(0,1), (0,2), (0,3)],[(0,1), (0,2), (0,3)],[(0,1), (0,2), (0,3)]])
+    marg_indeps = jnp.array([no_trek_nodes, no_trek_nodes])
 
     # fit stationary diffusion model
     model = LinearSDE(
-            dependency_regularizer="NO TREKS",
-            no_neighbors=True
+            dependency_regularizer="Non-Structural",# "NO TREKS",
+            # no_neighbors=True
         )
     key, subk = random.split(key)
     model.fit(
         subk,
-        [data, data_a, data_b],
-        targets=[jnp.zeros(d), targets_a, targets_b],
-        # steps=1000,
+        [data, data_b],
+        targets=[jnp.zeros(d), targets_b],
+        steps=10000,
         marg_indeps=marg_indeps,
     )
 
@@ -174,9 +211,9 @@ if __name__ == "__main__":
     intv_param_a = intv_param.index_at(1)
     x_pred_a = model.sample(subk, 1000, intv_param=intv_param_a)
 
-    print("Means of observed and generated data under 1st intervention: ")
-    print(data_a.mean(0))
-    print(x_pred_a.mean(0))
+    distances = calculate_distances(data_a, x_pred_a)
+    print("Mean Squared Error of the Means:", distances["mse_means"])
+    print("Wasserstein Distance:", distances["wasserstein_distance"])
     
     # env = jax.nn.one_hot(0, 3)
     # select = lambda leaf: jnp.einsum("e,e...", env, leaf)

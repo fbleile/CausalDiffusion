@@ -2,6 +2,7 @@ import functools
 
 from jax import vmap
 import jax.numpy as jnp
+import jax.lax as lax
 from scipy.linalg import solve_continuous_lyapunov
 
 from stadion.parameters import ModelParameters, InterventionParameters
@@ -65,7 +66,9 @@ class LinearSDE(KDSMixin, SDE):
         
         diag_idx = jnp.diag_indices(d)
         marg_row_idx, marg_col_idx = marg_indeps_to_indices(self.marg_indeps)
-        marg_indeps_idx = jnp.stack([marg_row_idx, marg_col_idx], axis=1)
+        marg_indeps_idx = jnp.stack(\
+                                    [jnp.concatenate([marg_row_idx, marg_col_idx]),\
+                                     jnp.concatenate([marg_col_idx, marg_row_idx])], axis=1)
         # Convert diag_idx (tuple of arrays) to a suitable format for concatenation
         diag_idx_merged = jnp.stack(diag_idx, axis=1)  # Convert to 2D array with shape (d, 2)
         
@@ -90,7 +93,7 @@ class LinearSDE(KDSMixin, SDE):
         elif self.no_neighbors:
             return ModelParameters(
                 parameters=param,
-                fixed={"weights": marg_indeps_idx},
+                fixed={"weights": (marg_row_idx, marg_col_idx)},
                 fixed_values={"weights": 0.0},
             )
         else:
@@ -241,16 +244,51 @@ class LinearSDE(KDSMixin, SDE):
         return reg
     
     @staticmethod
-    def regularize_dependence_non_structural(self, marg_indeps, param, intv_param):
-        M = param["weights"]
-        if not is_hurwitz_stable(M):
-            return 0
+    def compute_stationary_covar_mat(M, D):
+        """
+        Compute Σ (stationary covariance matrix) using the formula:
+        vec(Σ) = -(I_n ⊗ M + M ⊗ I_n)^(-1) vec(DD^T)
         
-        d = M.shape[0]
+        Args:
+            M (jax.numpy.ndarray): Matrix M of shape (n, n).
+            D (jax.numpy.ndarray): Matrix D of shape (n, n).
+        
+        Returns:
+            jax.numpy.ndarray: Stationary covariance matrix Σ of shape (n, n).
+        """
+        n = M.shape[0]
+        I_n = jnp.eye(n)  # Identity matrix of size n
+    
+        # Compute Kronecker products
+        kron_1 = jnp.kron(I_n, M)
+        kron_2 = jnp.kron(M, I_n)
+    
+        # Construct the matrix to invert
+        A = kron_1 + kron_2
+    
+        # Compute vec(DD^T)
+        DD_T = D @ D.T
+        vec_DD_T = jnp.reshape(DD_T, (-1,))
+    
+        # Solve for vec(Σ)
+        vec_sigma = -jnp.linalg.solve(A, vec_DD_T)
+    
+        # Reshape vec(Σ) back into Σ
+        Sigma = jnp.reshape(vec_sigma, (n, n))
+    
+        return Sigma
+    
+    @staticmethod
+    def regularize_dependence_non_structural(marg_indeps, param, intv_param):
+        M = param["weights"]
+        is_stable = is_hurwitz_stable(M)
+        
+        d = int(M.shape[0])
+        
         
         # compute sigma(x)
         c = jnp.exp(param["log_noise_scale"])
-        sig_mat = to_diag(jnp.ones_like(d)) * c
+        sig_mat = to_diag(jnp.ones((d,))) * c
         assert sig_mat.shape == (d, d)
 
         # intervention: scale sigma by scalar
@@ -260,13 +298,20 @@ class LinearSDE(KDSMixin, SDE):
             sig_mat = jnp.einsum("...ab,a->...ab", sig_mat, scale)
         
         # Compute the stationary covariance matrix Γ by solving the Lyapunov equation
-        Gamma = solve_continuous_lyapunov(M, -sig_mat @ sig_mat.T)
+        Gamma = LinearSDE.compute_stationary_covar_mat(M, -sig_mat @ sig_mat.T)
         
-        pen = 0
+        pen = 0.0
+        epsilon = 1e-8  # Small value to avoid division by zero
+    
         for i, j in marg_indeps:
-            if Gamma[i, j]:
-                pen += (Gamma[i, j] / (Gamma[i,i] * Gamma[j,j]))**2
-        return pen
+            def compute_term():
+                return (Gamma[i, j] / (Gamma[i, i] * Gamma[j, j] + epsilon))**2
+    
+            # Only add the penalty if Gamma[i, j] is not zero
+            term = lax.cond(Gamma[i, j] != 0, compute_term, lambda: 0.0)
+            pen += term
+    
+        return pen * is_stable
     
     @staticmethod
     def regularize_dependence_no_treks(loss, x, marg_indeps, param, intv_param):
