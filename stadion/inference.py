@@ -172,6 +172,7 @@ class KDSMixin(SDE, ABC):
         steps=10000,
         batch_size=128,
         reg=0.001,
+        dep=0.001,
         warm_start_intv=True,
         verbose=10,
     ):
@@ -280,11 +281,11 @@ class KDSMixin(SDE, ABC):
             reg_penalty = reg * self.regularize_sparsity(param_) / self.n_vars
             assert reg_penalty.ndim == 0
             
-            dep_penalty = reg * self.regularize_dependence(batch_.x, marg_indeps_, param_, intv_param_)
+            dep_penalty = dep * self.regularize_dependence(batch_.x, marg_indeps_, param_, intv_param_)
 
             # return loss, aux info dict
             l = loss + reg_penalty + dep_penalty
-            return l, dict(kds_loss=loss)
+            return l, dict(kds_loss=loss,reg_penalty=reg_penalty,dep_penalty=dep_penalty)
 
         value_and_grad =  jax.value_and_grad(objective_fun, 0, has_aux=True)
 
@@ -355,7 +356,9 @@ class KDSMixin(SDE, ABC):
                 ave_logs = retrieve_ave(logs)
                 logs = defaultdict(float)
                 print_str = f"step: {t: >5d} " \
-                            f"kds: {ave_logs['loss']: >12.6f}  | " \
+                            f"kds: {ave_logs['kds_loss']: >12.6f}  | " \
+                            f"reg: {ave_logs['reg_penalty']: >12.6f}  | " \
+                            f"dep: {ave_logs['dep_penalty']: >12.6f}  | " \
                             f"min remain: {(steps - t) * t_elapsed / log_every / 60.0: >4.1f}  " \
                             f"sec/step: {t_elapsed / log_every: >5.3f}"
                 print(print_str, flush=True)

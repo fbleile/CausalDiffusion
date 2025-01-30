@@ -7,6 +7,7 @@ import networkx as nx
 
 import matplotlib.pyplot as plt
 
+from stadion.parameters import InterventionParameters
 from stadion.notreks import notreks_loss, no_treks
 from stadion.metrics import calculate_distances
 
@@ -70,7 +71,7 @@ def generate_acyclic_graph(d, sparsity, key):
         for j in range(i + 1, d):  # Only consider edges from lower to higher indices
             # Split the key to get a new subkey for each iteration
             key, subkey = jax.random.split(key)
-            random_value = jax.random.uniform(subkey)  # Random value in [0, 1)
+            random_value = jax.random.uniform(subkey, minval=-3., maxval=3.)  # Random value in [0, 1)
 
             if random_value < sparsity:
                 key, weight_key = jax.random.split(key)
@@ -149,9 +150,9 @@ def plot_dag(graph):
 
 
 if __name__ == "__main__":
-
-    key = random.PRNGKey(1)
-    n, d = 1000, 5
+    # key = 1, d = 10
+    key = random.PRNGKey(12)
+    n, d = 1000, 10
 
     # # generate a dataset
     # key, subk = random.split(key)
@@ -161,8 +162,9 @@ if __name__ == "__main__":
     # data = random.normal(subk, shape=(n, d)) @ w
 
     # sample two more datasets with shift interventions
-    a, targets_a =  3, jnp.array([0, 1, 0, 0, 0])
-    b, targets_b = -5, jnp.array([0, 0, 0, 1, 0])
+    a, targets_a =  3, jnp.zeros(d).at[1].set(1)
+    b, targets_b = -5, jnp.zeros(d).at[2].set(1)
+    c, targets_c = -20, jnp.zeros(d).at[4].set(1)
 
     # key, subk_0, subk_1 = random.split(key, 3)
     # data_a = (random.normal(subk_0, shape=(n, d)) + a * targets_a) @ w
@@ -170,10 +172,14 @@ if __name__ == "__main__":
     
     # Generate a random DAG
     sparsity = 0.3
-    key, subk = random.split(key)
-    dag = generate_acyclic_graph(d, sparsity, subk)
     
-    trek_graph, no_trek_nodes = build_trek_graph(dag)
+    no_trek_nodes = []
+    while len(no_trek_nodes) == 0:
+        key, subk = random.split(key)
+        dag = generate_acyclic_graph(d, sparsity, subk)
+        trek_graph, no_trek_nodes = build_trek_graph(dag)
+    
+    print(no_trek_nodes)
     
     # plot_dag(dag)
     
@@ -183,20 +189,24 @@ if __name__ == "__main__":
     data_a = sample_scm(dag, n, key, noise_dist="gaussian", shift_intv = a * targets_a)
     key, subk = random.split(key)
     data_b = sample_scm(dag, n, key, noise_dist="gaussian", shift_intv = b * targets_b)
+    key, subk = random.split(key)
+    data_c = sample_scm(dag, n, key, noise_dist="gaussian", shift_intv = c * targets_c)
+    key, subk = random.split(key)
+    data_c2 = sample_scm(dag, n, key, noise_dist="gaussian", shift_intv = c * targets_c)
     
-    marg_indeps = jnp.array([no_trek_nodes, no_trek_nodes])
+    marg_indeps = jnp.array([no_trek_nodes, no_trek_nodes, no_trek_nodes])
 
     # fit stationary diffusion model
     model = LinearSDE(
-            dependency_regularizer="Non-Structural",# "NO TREKS",
+            # dependency_regularizer="both", # Non-Structural",# "NO TREKS", # 
             # no_neighbors=True
         )
     key, subk = random.split(key)
     model.fit(
         subk,
-        [data, data_b],
-        targets=[jnp.zeros(d), targets_b],
-        steps=10000,
+        [data, data_a, data_b],
+        targets=[jnp.zeros(d), targets_a, targets_b],
+        steps=5*10000,
         marg_indeps=marg_indeps,
     )
 
@@ -204,22 +214,31 @@ if __name__ == "__main__":
     param = model.param
     intv_param = model.intv_param
 
-    pprint(param)
-    pprint(intv_param)
-
-    # sample from model under intervention parameters learned for 1st environment
+    # pprint(param)
+    # pprint(intv_param)
+    
+    # in distribution test
     intv_param_a = intv_param.index_at(1)
     x_pred_a = model.sample(subk, 1000, intv_param=intv_param_a)
 
-    distances = calculate_distances(data_a, x_pred_a)
-    print("Mean Squared Error of the Means:", distances["mse_means"])
-    print("Wasserstein Distance:", distances["wasserstein_distance"])
+    distances_a = calculate_distances(data_a, x_pred_a)
+    print("Mean Squared Error of the Means:", distances_a["mse_means"])
+    print("Wasserstein Distance:", distances_a["wasserstein_distance"])
     
-    # env = jax.nn.one_hot(0, 3)
-    # select = lambda leaf: jnp.einsum("e,e...", env, leaf)
-    # intv_param_ = tree_map(select, intv_param)
+    # out of distribution test
+    param_c = {
+        "shift": c * targets_c, # intv_param.index_at(3)["shift"], # 
+        "log_scale": jnp.zeros(d),
+    }
+    intv_param_c = InterventionParameters(parameters=param_c, targets=targets_c)
     
-    # loss_func = notreks_loss(model.f, model.sigma)
-    # # jnp.array([[1.,2.,3.,4.,5.],[1.,2.,3.,4.,5.]])
-    # dep_loss = loss_func(data, marg_indeps[0], param, intv_param_)
-    # print(dep_loss)
+    x_pred_c = model.sample(subk, 1000, intv_param=intv_param_c)
+
+    distances_c = calculate_distances(data_c, x_pred_c)
+    print("Mean Squared Error of the Means:", distances_c["mse_means"])
+    print("Wasserstein Distance:", distances_c["wasserstein_distance"])
+    
+
+    distances_c2 = calculate_distances(data_c, data_c2)
+    print("Mean Squared Error of the Means:", distances_c2["mse_means"])
+    print("Wasserstein Distance:", distances_c2["wasserstein_distance"])

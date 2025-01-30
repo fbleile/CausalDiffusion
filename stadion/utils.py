@@ -140,7 +140,7 @@ def marg_indeps_to_adj_mat(d, marg_indeps):
     return adj_matrix
 
 def marg_indeps_to_indices(marg_indeps):
-    if marg_indeps == None:
+    if marg_indeps == None or marg_indeps.size == 0:
         return jnp.array([]), jnp.array([])
     return marg_indeps[..., 0].flatten(), marg_indeps[..., 1].flatten()
 

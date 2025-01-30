@@ -316,6 +316,8 @@ class LinearSDE(KDSMixin, SDE):
     @staticmethod
     def regularize_dependence_no_treks(loss, x, marg_indeps, param, intv_param):
         assert notreks_loss != None
+        if marg_indeps is None or len(marg_indeps) == 0:
+            return 0
         # jnp.array([[1.,2.,3.,4.,5.],[1.,2.,3.,4.,5.]])
         dep_loss = loss(x, marg_indeps, param, intv_param)
         return dep_loss
