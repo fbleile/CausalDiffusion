@@ -2,8 +2,11 @@ import math
 import functools
 from abc import ABC, abstractmethod
 
+import copy
+
+import numpy as onp
 import jax
-from jax import numpy as jnp, lax, random
+from jax import numpy as jnp, lax, random, tree_map
 
 
 class SDE(ABC):
@@ -190,6 +193,7 @@ class SDE(ABC):
 
         # run approximation in `n_samples_per_rollout` chunks of `thinning` steps
         # traj: [n_samples_per_rollout, *rollouts_shape, d]
+        
         _, thinned_traj = lax.scan(_euler_chunk, carry_init, None, length=n_samples_per_rollout)
         assert thinned_traj[0].shape == (n_samples_per_rollout, *self.rollouts_shape, self.n_vars)
 
@@ -207,6 +211,7 @@ class SDE(ABC):
         n_samples,
         *,
         intv_param=None,
+        return_traj=False,
     ):
         """
         Samples from the stationary SDE model. The model parameters
@@ -243,4 +248,89 @@ class SDE(ABC):
         # permute samples and ensure we have exactly `n_samples` samples when `n_samples % rollouts_shape` is nonzero
         key, subk = random.split(key)
         samples = samples[random.permutation(subk, samples.shape[-2])[:n_samples], :]
-        return samples
+        
+        if return_traj:
+            # [n_samples, d], [*rollouts_shape, n_samples_per_rollout, d]
+            return samples, traj, log
+        else:
+            # [n_envs, n_samples, d]
+            return samples
+        
+    def sample_envs(
+        self,
+        key,
+        n_samples,
+        *,
+        intv_param=None,
+        return_traj=False,
+    ):
+        if intv_param == None:
+            return self.sample(key, n_samples, return_traj = return_traj)
+        
+        # Extract parameters dictionary
+        params = intv_param._store
+        
+        if not params:
+            raise ValueError("intv_param.parameters is empty")
+    
+        # Get reference type and shape
+        first_key = next(iter(params))
+        ref_value = params[first_key]
+        
+        # Ensure all values have the same type and shape
+        ref_type = type(ref_value)
+        ref_shape = getattr(ref_value, 'shape', None)  # Works for NumPy arrays, tensors
+    
+        for k, value in params.items():
+            if not isinstance(value, ref_type):
+                raise TypeError(f"Parameter '{k}' has type {type(value)}, expected {ref_type}")
+            if getattr(value, 'shape', None) != ref_shape:
+                raise ValueError(f"Parameter '{k}' has shape {getattr(value, 'shape', None)}, expected {ref_shape}")
+        
+        intv_param_envs = [copy.deepcopy(intv_param) for _ in range(ref_shape[0])]
+        
+        samples_list = []
+        if return_traj:
+            traj_list, log_list = [],[]
+            
+        for i, intv_param_ in enumerate(intv_param_envs):
+            # select interventional parameters of the batch
+            # by taking dot-product with environment one-hot indicator vector
+            select = lambda leaf: jnp.einsum("e,e...", jnp.eye(ref_shape[0])[i], leaf)
+            intv_param_ = tree_map(select, intv_param_)
+            intv_param_.targets = tree_map(select, intv_param_.targets)
+            
+            key, subk = random.split(key)
+            samples = self.sample(
+                subk,
+                n_samples=n_samples,
+                intv_param=intv_param_,
+                return_traj=return_traj,
+            )
+            
+            if return_traj:
+                samples, traj, log = samples
+                samples_list.append(onp.array(samples))
+                traj_list.append(onp.array(traj) if traj is not None else None)
+                log_list.append(onp.array(log) if log is not None else None)
+            else:
+                samples_list.append(onp.array(samples))
+            
+            
+            
+        samples = onp.stack(samples_list)
+        
+        if return_traj:
+            traj = onp.stack(traj_list) if traj_list[0] is not None else None
+            # Assuming log_list contains numpy arrays of empty dictionaries and you're stacking them
+            log = {k: [d[0].get(k) for d in log_list 
+                        if isinstance(d, onp.ndarray) 
+                        and d.size > 0  # Check if d has elements
+                        and d.ndim > 0  # Ensure d is at least 1D
+                        and isinstance(d[0], dict)] 
+                    for k in set().union(*(d[0].keys() for d in log_list 
+                                       if isinstance(d, onp.ndarray) 
+                                       and d.size > 0 
+                                       and d.ndim > 0 
+                                       and isinstance(d[0], dict)))}
+        return samples, traj, log

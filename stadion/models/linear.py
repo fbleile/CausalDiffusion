@@ -155,6 +155,7 @@ class LinearSDE(KDSMixin, SDE):
         # [d,]
         if intv_param is not None:
             # print(f'intv_param {intv_param["shift"].shape}')
+            # print(f'f_vec {f_vec.shape}')
             f_vec += intv_param["shift"]
         assert x.shape == f_vec.shape
         return f_vec

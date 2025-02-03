@@ -11,7 +11,7 @@ def no_treks(W):
     
     return trek_W
 
-def notreks_loss(f, sigma, target_sparsity=0.1, scale_sig=10, estimator="analytic", abs_func="abs"):
+def notreks_loss(f, sigma, target_sparsity=0.1, scale_sig=1, estimator="analytic", abs_func="abs", normalize="row and col norm"):
     """
     Compute the notreks loss for the drift (f) and diffusion (sigma) functions of an SDE.
 
@@ -20,7 +20,8 @@ def notreks_loss(f, sigma, target_sparsity=0.1, scale_sig=10, estimator="analyti
         sigma (callable): Diffusion function of the SDE.
         target_sparsity (float): Target sparsity level for the sigmoid application.
         estimator (str): Method for calculating the loss (currently only "analytic" is supported).
-        abs_func (str): Method for ensuring non-negative matrix entries ("abs" or "square")
+        abs_func (str): Method for ensuring non-negative matrix entries ("abs" or "square").
+        normalize (str): Method for normalizeing matrix entries ("sigm" or "norm").
 
     Returns:
         callable: A loss function taking the inputs of `f` and `sigma` as *args.
@@ -45,11 +46,27 @@ def notreks_loss(f, sigma, target_sparsity=0.1, scale_sig=10, estimator="analyti
                 W = jnp.square(jacobian_f)
             else:
                 raise ValueError(f"Unknown method to ensure non-negative matrix entries `{abs_func}`.")
+                
+            if normalize == "sigm":
+                sparsity_threshhold = jnp.quantile(W, 1 - target_sparsity)
+                # Apply the sigmoid function entrywise to introduce sparsity
+                W = jax.nn.sigmoid(scale_sig * (W - sparsity_threshhold))
+            elif normalize == "norm":
+                W = W / jnp.linalg.norm(W)
+            elif normalize == "row and col norm":
+                # Calculate row norms
+                row_norms = jnp.linalg.norm(W, axis=1, keepdims=True)
+                # Calculate column norms
+                col_norms = jnp.linalg.norm(W, axis=0, keepdims=True)
+                
+                # Normalize each entry by its row and column norms
+                return W / (row_norms * col_norms)
+            elif normalize == None:
+                W = W
+            else:
+                raise ValueError(f"Unknown method to normalize matrix entries `{normalize}`.")
             
             
-            sparsity_threshhold = jnp.quantile(W, 1 - target_sparsity)
-            # Apply the sigmoid function entrywise to introduce sparsity
-            W = jax.nn.sigmoid(scale_sig * (W - sparsity_threshhold))
             return W
 
         @partial(vmap, in_axes=(0, None, None), out_axes=0)
@@ -60,10 +77,7 @@ def notreks_loss(f, sigma, target_sparsity=0.1, scale_sig=10, estimator="analyti
             W = compute_W(x, args)
             no_treks_W = no_treks(W)
             #sparsity_threshhold = jnp.quantile(no_treks_W, 1 - target_sparsity)
-            sparsity_threshhold = 0
-            
-            no_treks_W = jax.nn.sigmoid(scale_sig * (W - sparsity_threshhold))
-            
+            #no_treks_W = jax.nn.sigmoid(scale_sig * (W - sparsity_threshhold))
             return no_treks_W[marg_indeps_idx].sum()
 
         def loss(x, marg_indeps, *args):
