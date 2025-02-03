@@ -171,7 +171,7 @@ if __name__ == "__main__":
     # data_b = (random.normal(subk_1, shape=(n, d)) + b * targets_b) @ w
     
     # Generate a random DAG
-    sparsity = 0.3
+    sparsity = 0.1
     
     no_trek_nodes = []
     while len(no_trek_nodes) == 0:
@@ -181,7 +181,7 @@ if __name__ == "__main__":
     
     print(no_trek_nodes)
     
-    # plot_dag(dag)
+    plot_dag(dag)
     
     key, subk = random.split(key)
     data = sample_scm(dag, n, subk, noise_dist="gaussian")
@@ -198,16 +198,17 @@ if __name__ == "__main__":
 
     # fit stationary diffusion model
     model = LinearSDE(
-            # dependency_regularizer="both", # Non-Structural",# "NO TREKS", # 
-            # no_neighbors=True
+            dependency_regularizer="NO TREKS", # Non-Structural",# "both", # 
+            no_neighbors=True
         )
     key, subk = random.split(key)
     model.fit(
         subk,
         [data, data_a, data_b],
         targets=[jnp.zeros(d), targets_a, targets_b],
-        steps=5*10000,
+        steps=2*10000,
         marg_indeps=marg_indeps,
+        dep=1
     )
 
     # get inferred model and intervention parameters
@@ -239,6 +240,6 @@ if __name__ == "__main__":
     print("Wasserstein Distance:", distances_c["wasserstein_distance"])
     
 
-    distances_c2 = calculate_distances(data_c, data_c2)
-    print("Mean Squared Error of the Means:", distances_c2["mse_means"])
-    print("Wasserstein Distance:", distances_c2["wasserstein_distance"])
+    # distances_c2 = calculate_distances(data_c, data_c2)
+    # print("Mean Squared Error of the Means:", distances_c2["mse_means"])
+    # print("Wasserstein Distance:", distances_c2["wasserstein_distance"])
