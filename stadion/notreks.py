@@ -11,7 +11,7 @@ def no_treks(W):
     
     return trek_W
 
-def notreks_loss(f, sigma, target_sparsity=0.1, scale_sig=1, estimator="analytic", abs_func="abs", normalize="row and col norm"):
+def notreks_loss(f, sigma, target_sparsity=0.1, scale_sig=1, estimator="analytic", abs_func="abs", normalize="norm"):
     """
     Compute the notreks loss for the drift (f) and diffusion (sigma) functions of an SDE.
 
@@ -39,6 +39,12 @@ def notreks_loss(f, sigma, target_sparsity=0.1, scale_sig=1, estimator="analytic
             """
             # Compute the Jacobian (partial derivatives) of f with respect to x
             jacobian_f = jax.jacobian(f, argnums=0)(x, *args)
+            
+            print(jacobian_f.shape, (x.shape[-1], x.shape[-1]), x.shape)
+            
+            assert jacobian_f.shape == (x.shape[-1], x.shape[-1])
+            
+            # jacobian_sig = jax.jacobian(sigma, argnums=0)(x, *args)
             # Square each entry of the Jacobian and take the mean
             if abs_func == "abs":
                 W = jnp.abs(jacobian_f)
@@ -60,7 +66,7 @@ def notreks_loss(f, sigma, target_sparsity=0.1, scale_sig=1, estimator="analytic
                 col_norms = jnp.linalg.norm(W, axis=0, keepdims=True)
                 
                 # Normalize each entry by its row and column norms
-                return W / (row_norms * col_norms)
+                return 2*W / (row_norms * col_norms)
             elif normalize == None:
                 W = W
             else:

@@ -778,3 +778,21 @@ def plot(samples, sampled_traj_full, batched_tars,
 
 
     return wandb_images if wandb_images else None
+
+def plot_wandb_images(wandb_images):
+    if not wandb_images:
+        print("No images to plot.")
+        return
+
+    num_images = len(wandb_images)
+    fig, axes = plt.subplots(1, num_images, figsize=(5 * num_images, 5))
+
+    if num_images == 1:
+        axes = [axes]  # Ensure we can iterate if only one image
+
+    for ax, (name, img) in zip(axes, wandb_images.items()):
+        ax.imshow(img, cmap="gray" if img.ndim == 2 else None)
+        ax.set_title(name)
+        ax.axis("off")
+
+    plt.show()

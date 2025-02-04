@@ -333,4 +333,6 @@ class SDE(ABC):
                                        and d.size > 0 
                                        and d.ndim > 0 
                                        and isinstance(d[0], dict)))}
-        return samples, traj, log
+            return samples, traj, log
+        else:
+            return samples

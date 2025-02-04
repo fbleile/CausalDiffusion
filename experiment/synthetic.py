@@ -8,10 +8,31 @@ import random as pyrandom
 
 from core import sample_dynamical_system, Data
 from utils.stable import project_closest_stable_matrix
+from utils.treks import get_all_missing_treks
 
 from stadion.models import LinearSDE
 from stadion.parameters import ModelParameters, InterventionParameters
 from stadion.utils import tree_init_normal
+
+def sparse(key, *, d, sparsity, acyclic):
+    key, subk = random.split(key)
+    
+    # Generate a random adjacency matrix with `sparse` probability
+    mask = random.bernoulli(subk, sparsity, (d, d)).astype(int)
+    
+    # Remove self-loops
+    mask = mask.at[jnp.diag_indices(d)].set(0)
+
+    # Ensure acyclic structure if required
+    if acyclic:
+        mask = jnp.tril(mask, k=-1)
+
+    # Randomly permute the adjacency matrix
+    key, subk = random.split(key)
+    p = random.permutation(subk, onp.eye(d).astype(int))  # Random permutation matrix
+    mask = p.T @ mask @ p
+
+    return mask
 
 
 def erdos_renyi(key, *, d, edges_per_var, acyclic):
@@ -99,9 +120,61 @@ def sbm(key, *, d, intra_edges_per_var, n_blocks, damp, acyclic):
     mat = p.T @ mat @ p
     return jnp.array(mat)
 
+def make_mask(key, config):
+    
+    d = config["n_vars"]
+    
+    max_attempts = 1000  # Adjust based on expected runtime
+    attempts = 0
+    
+    while True:
+        attempts += 1
+        if attempts > max_attempts:
+            raise RuntimeError(f"Exceeded maximum attempts while sampling sparse mask! \
+                               \nIt failed to generate {config['marg_indeps']} missing treks")
+        # sample sparse mask with `edges_per_var` edges
+        key, subk = random.split(key)
+    
+        if config["graph"] == "erdos_renyi":
+            mask = erdos_renyi(subk, d=d, edges_per_var=config["edges_per_var"], acyclic=False)
+    
+        elif config["graph"] == "erdos_renyi_acyclic":
+            mask = erdos_renyi(subk, d=d, edges_per_var=config["edges_per_var"], acyclic=True)
+    
+        elif config["graph"] == "scale_free":
+            mask = scale_free(subk, d=d, power=1.0, edges_per_var=config["edges_per_var"], acyclic=False)
+    
+        elif config["graph"] == "scale_free_acyclic":
+            mask = scale_free(subk, d=d, power=1.0, edges_per_var=config["edges_per_var"], acyclic=True)
+    
+        elif config["graph"] == "sparse":
+            mask = sparse(subk, d=d, sparsity=config["sparsity"], acyclic=False)
+    
+        elif config["graph"] == "sparse_acyclic":
+            mask = sparse(subk, d=d, sparsity=config["sparsity"], acyclic=True)
+    
+        elif config["graph"] == "sbm":
+            mask = sbm(subk, d=d, intra_edges_per_var=config["edges_per_var"], n_blocks=5, damp=0.1, acyclic=False)
+    
+        elif config["graph"] == "sbm_acyclic":
+            mask = sbm(subk, d=d, intra_edges_per_var=config["edges_per_var"], n_blocks=5, damp=0.1, acyclic=True)
+    
+        else:
+            raise ValueError(f"Unknown random graph structure model: {config['graph']}")
+        
+        miss_treks = get_all_missing_treks(mask)
+        if config["marg_indeps"] <= len(miss_treks):
+            key, subk = random.split(key)
+            marg_indeps = random.choice(subk, 
+                              jnp.array(miss_treks),  # Convert to JAX array
+                              shape=(config["marg_indeps"],), 
+                              replace=False)  # No replacement
+            # marg_indeps = miss_treks
+            break
+    return mask, marg_indeps
 
 
-def make_linear_model_parameters(key, config):
+def make_linear_model_parameters(key, config, mask):
     
     d = config["n_vars"]
 
@@ -121,30 +194,6 @@ def make_linear_model_parameters(key, config):
     vals = random.uniform(subk, shape=(d, d), minval=config["minval"] - config["maxval"],
                                               maxval=config["maxval"] - config["minval"])
     vals += config["minval"] * jnp.sign(vals)
-
-    # sample sparse mask with `edges_per_var` edges
-    key, subk = random.split(key)
-
-    if config["graph"] == "erdos_renyi":
-        mask = erdos_renyi(subk, d=d, edges_per_var=config["edges_per_var"], acyclic=False)
-
-    elif config["graph"] == "erdos_renyi_acyclic":
-        mask = erdos_renyi(subk, d=d, edges_per_var=config["edges_per_var"], acyclic=True)
-
-    elif config["graph"] == "scale_free":
-        mask = scale_free(subk, d=d, power=1.0, edges_per_var=config["edges_per_var"], acyclic=False)
-
-    elif config["graph"] == "scale_free_acyclic":
-        mask = scale_free(subk, d=d, power=1.0, edges_per_var=config["edges_per_var"], acyclic=True)
-
-    elif config["graph"] == "sbm":
-        mask = sbm(subk, d=d, intra_edges_per_var=config["edges_per_var"], n_blocks=5, damp=0.1, acyclic=False)
-
-    elif config["graph"] == "sbm_acyclic":
-        mask = sbm(subk, d=d, intra_edges_per_var=config["edges_per_var"], n_blocks=5, damp=0.1, acyclic=True)
-
-    else:
-        raise ValueError(f"Unknown random graph structure model: {config['graph']}")
 
     assert onp.all(onp.isclose(onp.diag(mask), 0)), "Diagonal of mask must be 0 always."
 
@@ -267,7 +316,9 @@ def synthetic_sde_data(seed, config):
 
     # sample ground truth parameters
     key, subk = random.split(key)
-    true_theta = make_linear_model_parameters(subk, config)
+    mask, marg_indeps = make_mask(subk, config)
+    key, subk = random.split(key)
+    true_theta = make_linear_model_parameters(subk, config, mask)
     
     # fit stationary diffusion model
     model = LinearSDE(
@@ -332,6 +383,8 @@ def synthetic_sde_data(seed, config):
             dict(
                 data=samples,
                 intv=intv_msks,
+                intv_param=intv_params,
+                marg_indeps=marg_indeps,
                 true_param=jnp.tile(true_theta["w1"], (intv_msks.shape[0], 1, 1)),
                 traj=traj,
             ).copy(),

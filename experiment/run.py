@@ -16,7 +16,7 @@ import numpy as onp
 from sklearn.decomposition import PCA
 
 from experiment.core import sample_dynamical_system, Data
-from experiment.plot import plot
+from experiment.plot import plot, plot_wandb_images
 from experiment.data import make_dataset, Batch, sample_batch_jax
 from experiment.intervention import search_intv_theta_shift
 from experiment.definitions import cpu_count, IS_CLUSTER, CONFIG_DIR
@@ -25,6 +25,7 @@ from experiment.sample import make_data
 
 from experiment.utils.parse import load_config
 from experiment.utils.version_control import get_gpu_info, get_gpu_info2
+from experiment.utils.metrics import make_mse, make_wasserstein
 
 from stadion.models import LinearSDE
 
@@ -139,7 +140,10 @@ def run_algo(train_targets, test_targets, config=None, eval_mode=False, t_init=N
     key, subk = random.split(key)
 
     if config.model == "linear":
-        model = LinearSDE()
+        model = LinearSDE(
+                dependency_regularizer="NO TREKS", # Non-Structural",# "both", # 
+                no_neighbors=True,
+            )
     elif config.model == "mlp":
         # TODO
         pass
@@ -148,6 +152,9 @@ def run_algo(train_targets, test_targets, config=None, eval_mode=False, t_init=N
 
 
     """++++++++++++++   Fit Model with Data   ++++++++++++++"""
+    n_train_envs = len(train_targets.data)
+    
+    print(f'marg_indeps: {train_targets.marg_indeps}')
 
     print(f"Fitting Model", flush=True)
     key, subk = random.split(key)
@@ -155,14 +162,14 @@ def run_algo(train_targets, test_targets, config=None, eval_mode=False, t_init=N
         subk,
         train_targets.data,
         targets=train_targets.intv,
-        marg_indeps=None,
+        marg_indeps=jnp.array([train_targets.marg_indeps]*n_train_envs),
         bandwidth=config.bandwidth,
         estimator="linear",
         learning_rate=config.learning_rate,
         steps=config.steps,
         batch_size=config.batch_size,
         reg=config.reg_strength,
-        dep=0.001,
+        dep=0.1,
         warm_start_intv=True,
         verbose=10,
     )
@@ -172,7 +179,7 @@ def run_algo(train_targets, test_targets, config=None, eval_mode=False, t_init=N
     """++++++++++++++ Plot ++++++++++++++"""
     print("Starting inference...")
     
-    sampler = model.sample
+    sampler = model.sample_envs
 
     # MSE
     mse_accuracy = make_mse(sampler=sampler, n=config.metric_batch_size)
@@ -186,8 +193,7 @@ def run_algo(train_targets, test_targets, config=None, eval_mode=False, t_init=N
 
     """
     ------------------------------------
-    Evaluation and logging 
-    Only done when not in eval_mode
+    Evaluation and logging
     ------------------------------------
     """
     
@@ -196,140 +202,121 @@ def run_algo(train_targets, test_targets, config=None, eval_mode=False, t_init=N
     # eval metrics
     key, subk = random.split(key)
     log_dict["mse_train"], _ = \
-        mse_accuracy(subk, train_targets, theta, intv_theta_train)
+        mse_accuracy(subk, train_targets, model.intv_param)
     
     key, subk = random.split(key)
     log_dict["wasser_train"], _ = \
-        wasserstein_accuracy_train(subk, train_targets, theta, intv_theta_train)
-
-    # ------------ debugging ------------
-    key, subk = random.split(key)
-    debug_samples = sampler(subk, theta, intv_theta_train, train_targets.intv, n_samples=config.metric_batch_size)
-    log_dict["unstable_observ_100"] = is_unstable(debug_samples, std_bound=100)[0].item()
-    # -----------------------------------
-    
-    wandb_dict.update(**log_dict)
-    print(f"t: {t: >5d} "
-          f"loss: {log_dict['loss']: >12.6f}  "
-          # f"mse: {log_dict['mse_train']: >8.3f}  "
-          # f"gnorm: {log_dict['grad_norm']: >6.4f}  "
-          f"eigv: {log_dict['max_eigenvalue']: >4.2f}  "
-          f"min: {(config.steps - t) * log_dict['t_step'] / 60.0: >4.1f}  "
-          f"sec/step: {log_dict['t_step']: >4.2f} "
-          , flush=True)
-    
-    
+        wasserstein_accuracy_train(subk, train_targets, model.intv_param)
     
     assert test_targets is not None
     
-    # assumed information about test targets
-    test_target_intv = test_targets.intv
-    test_emp_means = test_target_intv * jnp.array([data.mean(-2) for data in test_targets.data])
+    # # assumed information about test targets
+    # test_target_intv = test_targets.intv
+    # test_emp_means = test_target_intv * jnp.array([data.mean(-2) for data in test_targets.data])
     
-    # init new intv_theta_test with scale 0.0
-    key, subk = random.split(key)
-    intv_theta_test_init = init_intv_theta(subk, test_target_intv.shape[0], config.d,
-                                           scale_param=config.learn_intv_scale, scale=0.0)
+    # # init new intv_theta_test with scale 0.0
+    # key, subk = random.split(key)
+    # intv_theta_test_init = init_intv_theta(subk, test_target_intv.shape[0], config.d,
+    #                                        scale_param=config.learn_intv_scale, scale=0.0)
     
-    # update estimate of intervention effects in test set
-    key, subk = random.split(key)
-    intv_theta_test, logs = search_intv_theta_shift(subk, theta=theta,
-                                                    intv_theta=intv_theta_test_init,
-                                                    target_means=test_emp_means,
-                                                    target_intv=test_target_intv,
-                                                    sampler=sampler,
-                                                    n_samples=config.metric_batch_size)
+    # # update estimate of intervention effects in test set
+    # key, subk = random.split(key)
+    # intv_theta_test, logs = search_intv_theta_shift(subk, theta=theta,
+    #                                                 intv_theta=intv_theta_test_init,
+    #                                                 target_means=test_emp_means,
+    #                                                 target_intv=test_target_intv,
+    #                                                 sampler=sampler,
+    #                                                 n_samples=config.metric_batch_size)
     
     # to compute metrics, use test data
     key, subk = random.split(key)
-    logs["mse_test"], _ = \
-        mse_accuracy(subk, test_targets, theta, intv_theta_test)
+    log_dict["mse_test"], _ = \
+        mse_accuracy(subk, test_targets, test_targets.intv_param)
     
-    if IS_CLUSTER:
-        key, subk = random.split(key)
-        logs["wasser_test"], _= \
-            wasserstein_accuracy_test(subk, test_targets, theta, intv_theta_test)
+    key, subk = random.split(key)
+    log_dict["wasser_test"], _= \
+        wasserstein_accuracy_test(subk, test_targets, test_targets.intv_param)
     
-    for plot_suffix, plot_tars, plot_intv_theta in [("train", train_targets, intv_theta_train),
-                                                    ("test", test_targets, intv_theta_test)]:
+    if False:
+        for plot_suffix, plot_tars, plot_intv_param in [("train", train_targets, model.intv_param),
+                                                        ("test", test_targets, test_targets.intv_param)]:
 
-        # simulate rollouts
-        key, subk = random.split(key)
-        samples, trajs_full, _ = sampler(subk, theta, plot_intv_theta, plot_tars.intv,
-                                         n_samples=config.metric_batch_size, return_traj=True)
+            # simulate rollouts
+            key, subk = random.split(key)
+            samples, trajs_full, _ = sampler(subk, config.metric_batch_size, intv_param=plot_intv_param, return_traj=True)
 
-        assert samples.shape[1] >= config.plot_batch_size, "Error: should sample at least `plot_batch_size` samples "
-        samples, trajs_full_single = samples[:, :config.plot_batch_size, :], trajs_full[:, 0]
+            assert samples.shape[1] >= config.plot_batch_size, "Error: should sample at least `plot_batch_size` samples "
+            samples, trajs_full_single = samples[:, :config.plot_batch_size, :], trajs_full[:, 0]
 
-        # # plot with batched target
-        # key, subk = random.split(key)
-        # batched_plot_tars = sample_subset(subk, plot_tars, config.plot_batch_size)
+            # # plot with batched target
+            # key, subk = random.split(key)
+            # batched_plot_tars = sample_subset(subk, plot_tars, config.plot_batch_size)
 
-        wandb_images = plot(samples, trajs_full_single, plot_tars,
-                            # title_prefix=f"{plot_suffix} t={t} ",
-                            title_prefix=f"{plot_suffix}",
-                            theta=theta,
-                            intv_theta=plot_intv_theta,
-                            true_param=train_targets.true_param,
-                            ref_data=train_targets.data[0],
-                            cmain="grey",
-                            cfit="blue",
-                            cref="grey",
-                            t_current=t,
-                            # plot_mat=False,
-                            # plot_mat=True,
-                            plot_mat=plot_suffix == "train",
-                            # plot_mat=plot_suffix== "train" and t == int(config.steps),
-                            # plot_params=False,
-                            plot_params=plot_suffix== "train" and IS_CLUSTER,
-                            # plot_params=True,
-                            plot_acorr=False,
-                            # proj=None,
-                            proj=proj,
-                            # proj=proj,
-                            # proj=proj if plot_suffix == "train" else None,
-                            # proj=proj if t == config.steps else None,
-                            # proj=proj if t == config.steps and plot_suffix == "train" else None,
-                            # plot_intv_marginals=False,
-                            # plot_intv_marginals=True,
-                            plot_intv_marginals=IS_CLUSTER,
-                            # plot_intv_marginals=not IS_CLUSTER or (plot_suffix == "train"),
-                            # plot_intv_marginals=plot_suffix == "train",
-                            # plot_pairwise_grid=False,
-                            # plot_pairwise_grid=True,
-                            # plot_pairwise_grid=not IS_CLUSTER or (plot_suffix == "train"),
-                            # plot_pairwise_grid=plot_suffix== "train",
-                            # plot_pairwise_grid=plot_suffix== "test",
-                            plot_pairwise_grid=plot_suffix== "train" or (t == config.steps and IS_CLUSTER),
-                            # plot_pairwise_grid=plot_suffix== "train" and t == config.steps and config.d <= 5,
-                            grid_type="hist-kde",
-                            # contours=(0.68, 0.95),
-                            # contours_alphas=(0.33, 1.0),
-                            contours=(0.90,),
-                            contours_alphas=(1.0,),
-                            # scotts_bw_scaling=0.75,
-                            scotts_bw_scaling=1.0,
-                            size_per_var=1.0,
-                            plot_max=config.plot_max,
-                            to_wandb=IS_CLUSTER)
+            wandb_images = plot(samples, trajs_full_single, plot_tars,
+                                # title_prefix=f"{plot_suffix} t={t} ",
+                                title_prefix=f"{plot_suffix}",
+                                theta=model.param._store,
+                                intv_theta=plot_intv_param._store,
+                                true_param=train_targets.true_param,
+                                ref_data=train_targets.data[0],
+                                cmain="grey",
+                                cfit="blue",
+                                cref="grey",
+                                # plot_mat=False,
+                                # plot_mat=True,
+                                plot_mat=plot_suffix == "train",
+                                # plot_mat=plot_suffix== "train" and t == int(config.steps),
+                                # plot_params=False,
+                                plot_params=plot_suffix== "train" and IS_CLUSTER,
+                                # plot_params=True,
+                                plot_acorr=False,
+                                # proj=None,
+                                proj=proj,
+                                # proj=proj,
+                                # proj=proj if plot_suffix == "train" else None,
+                                # proj=proj if t == config.steps else None,
+                                # proj=proj if t == config.steps and plot_suffix == "train" else None,
+                                # plot_intv_marginals=False,
+                                # plot_intv_marginals=True,
+                                plot_intv_marginals=IS_CLUSTER,
+                                # plot_intv_marginals=not IS_CLUSTER or (plot_suffix == "train"),
+                                # plot_intv_marginals=plot_suffix == "train",
+                                # plot_pairwise_grid=False,
+                                # plot_pairwise_grid=True,
+                                # plot_pairwise_grid=not IS_CLUSTER or (plot_suffix == "train"),
+                                # plot_pairwise_grid=plot_suffix== "train",
+                                # plot_pairwise_grid=plot_suffix== "test",
+                                plot_pairwise_grid=plot_suffix== "train",
+                                # plot_pairwise_grid=plot_suffix== "train" and t == config.steps and config.d <= 5,
+                                grid_type="hist-kde",
+                                # contours=(0.68, 0.95),
+                                # contours_alphas=(0.33, 1.0),
+                                contours=(0.90,),
+                                contours_alphas=(1.0,),
+                                # scotts_bw_scaling=0.75,
+                                scotts_bw_scaling=1.0,
+                                size_per_var=1.0,
+                                plot_max=config.plot_max,
+                                to_wandb=IS_CLUSTER)
 
-
-        if wandb_images:
-            wandb_images = {f"{k}-{plot_suffix}" if "matrix" not in k else k: v
-                            for k, v in wandb_images.items()}
-            wandb_dict.update(wandb_images)
+            if wandb_images:
+                wandb_images = {f"{k}-{plot_suffix}" if "matrix" not in k else k: v
+                                for k, v in wandb_images.items()}
+                plot_wandb_images(wandb_images)
 
     print(f"End of run_algo after total walltime: "
           f"{str(datetime.timedelta(seconds=round(time.time() - t_run_algo)))}",
           flush=True)
-
-    return sampler, init_intv_theta, theta, intv_theta_train
+    
+    print(log_dict)
+    
+    return log_dict
 
 if __name__ == "__main__":
     debug_config = Namespace()
 
     # fixed
-    debug_config.seed = 0
+    debug_config.seed = 5
 
     # data
     debug_config.data_config = "dev/linear.yaml"
@@ -341,7 +328,7 @@ if __name__ == "__main__":
     debug_config.sampler_eps = 0.0
     debug_config.reg_eps = 0.0
 
-    debug_config.init_scale = 0.001
+    debug_config.init_scale = 0.1
     debug_config.init_diag = 0.0
     debug_config.init_intv_at_mean = True
     debug_config.learn_intv_scale = False
@@ -353,15 +340,17 @@ if __name__ == "__main__":
     # optimization
     debug_config.batch_size = 192
     debug_config.batch_size_env = 1
-    debug_config.bandwidth = 1.0
+    debug_config.bandwidth = 5.0
     debug_config.reg_strength = 0.01
     debug_config.reg_type = "glasso"
     debug_config.grad_clip_val = None
     debug_config.force_linear_diag = True
+    
+    debug_config.dep_strength = 1
 
-    debug_config.steps = 2000
+    debug_config.steps = 10000
     debug_config.optimizer = "adam"
-    debug_config.learning_rate = 0.003
+    debug_config.learning_rate = 0.001
 
     debug_config.log_every = 100
     debug_config.eval_every = 10000

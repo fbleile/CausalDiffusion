@@ -198,8 +198,8 @@ if __name__ == "__main__":
 
     # fit stationary diffusion model
     model = LinearSDE(
-            dependency_regularizer="NO TREKS", # Non-Structural",# "both", # 
-            no_neighbors=True
+            # dependency_regularizer="NO TREKS", # Non-Structural",# "both", # 
+            # no_neighbors=True,
         )
     key, subk = random.split(key)
     model.fit(

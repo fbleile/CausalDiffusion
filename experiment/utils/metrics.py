@@ -60,7 +60,7 @@ def matern_52_kernel(x, y, ls):
     return (1.0 + jnp.sqrt(5) * r / ls + 5 * r2 / (3 * (ls ** 2))) * jnp.exp(- jnp.sqrt(5) * r / ls)
 
 
-@jax.jit
+# @jax.jit
 def mmd_fun(target_x, target_y, ls):
     n_x, n_y = target_x.shape[-2], target_y.shape[-2]
 
@@ -74,28 +74,28 @@ def mmd_fun(target_x, target_y, ls):
     return dis
 
 
-@jax.jit
+# @jax.jit
 def mse_fun(samples_pred, samples_target):
     mu_pred = samples_pred.mean(-2)
     mu_tar = samples_target.mean(-2)
     return jnp.square(mu_pred - mu_tar).mean(-1)
 
 
-@jax.jit
+# @jax.jit
 def relmse_fun(samples_pred, samples_target):
     mu_pred = samples_pred.mean(-2)
     mu_tar = samples_target.mean(-2)
     return (jnp.square(mu_pred - mu_tar).sum(-1) ** 0.5) / (jnp.square(mu_tar).sum(-1) ** 0.5)
 
 
-@jax.jit
+# @jax.jit
 def vse_fun(samples_pred, samples_target):
     std_pred = samples_pred.std(-2)
     std_tar = samples_target.std(-2)
     return jnp.square(std_pred - std_tar).mean(-1)
 
 
-@jax.jit
+# @jax.jit
 def kde_nll_fun(pred, target):
     n_pred, d = pred.shape
     bw_scotts = float(n_pred) ** float(-1. / (d + 4))
@@ -111,7 +111,7 @@ def kde_nll_fun(pred, target):
     return - ll.mean(0)
 
 
-@jax.jit
+# @jax.jit
 def wasserstein_fun(target_x, target_y, epsilon):
     assert target_x.ndim == target_y.ndim == 2 and target_x.shape[-1] == target_y.shape[-1]
     a = jnp.ones(len(target_x)) / len(target_x)
@@ -126,7 +126,11 @@ def wasserstein_fun(target_x, target_y, epsilon):
         epsilon=epsilon,
         symmetric_sinkhorn=False,
     )
-    return out_xy.divergence
+    # If it's a tuple, extract the first element
+    if isinstance(out_xy, tuple):
+        return out_xy[0]  # Usually, the divergence value is the first element
+    
+    return out_xy
 
 
 def is_nan(samples):
@@ -221,11 +225,11 @@ def make_metric(metr_fun_envs, *args, sampler, n=256):
     Helper function for evaluating a metric evaluating in parallel over multiple environments
     using a sampler and target data
     """
-    @jax.jit
-    def _metric_fun(key, tars, theta, intv_theta):
+    # @jax.jit
+    def _metric_fun(key, targets, intv_param):
         # simulate model rollouts for each env
         key, subk = random.split(key)
-        pred_samples = sampler(subk, theta, intv_theta, tars.intv, n_samples=n)
+        pred_samples = sampler(subk, n, intv_param=intv_param)
 
         # [*envs, n_test_samples, d]
         assert pred_samples.shape[-2] >= n
@@ -235,7 +239,7 @@ def make_metric(metr_fun_envs, *args, sampler, n=256):
         # # list of [<=n_test_samples, d]
         # key, subk = random.split(key)
         # tars_batched = sample_subset(key, tars, n)
-        tars_batched = tars
+        tars_batched = targets
 
         # iterate over envs individually and compute metric
         # (python for loop because target env shapes may not be the same)
@@ -243,7 +247,7 @@ def make_metric(metr_fun_envs, *args, sampler, n=256):
 
         # only count intv metric if we had an intervention
         msk = jnp.isclose(tars_batched.intv, 1).any(-1).astype(jnp.float32)
-        assert metrics.shape == imetrics.shape == msk.shape == (len(tars.data),)
+        assert metrics.shape == imetrics.shape == msk.shape == (len(targets.data),)
 
         metrics_mean = metrics.mean(0)
         imetrics_mean = (imetrics * msk).sum() / msk.sum()

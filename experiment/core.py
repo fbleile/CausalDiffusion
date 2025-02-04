@@ -232,11 +232,18 @@ class Data(NamedTuple):
     """
     data: list of length `n_envs` of unequally shaped [n_i, d]
     intv: [n_envs, d]
-    true_param: [d, d]
+    intv_param: [n_envs, d]
+    true_param: InterventionParameters
+    marg_indeps: ndarray, list of length m for m data
+        sets with each element is list of 2-tuples of known marginal
+        independencies provided as 2-tuples of indices aligned with
+        the indput ``x``.
     traj: [n_envs, t_max, d]
     """
     data: Any
     intv: Any
+    intv_param: Any
+    marg_indeps: Any
     true_param: Any = None
     traj: Any = None
 

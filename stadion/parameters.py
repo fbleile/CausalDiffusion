@@ -127,7 +127,7 @@ class ModelParameters(Parameters):
                     value = self._fixed_values[k]
                 else:
                     raise ValueError(f"`fixed_values` must be a number or a dictionary containing the keys of `fixed`.")
-                print(new[k])
+                # print(new[k])
                 new[k] = new[k].at[idx].set(value)
             return new
 
