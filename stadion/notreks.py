@@ -28,6 +28,7 @@ def notreks_loss(f, sigma, target_sparsity=0.1, scale_sig=1, estimator="analytic
     """
 
     if estimator == "analytic":
+        # @partial(vmap, in_axes=(0, None), out_axes=0)
         def compute_W(x, args):
             """
             Compute the weighted matrix for notreks calculation.
@@ -39,12 +40,16 @@ def notreks_loss(f, sigma, target_sparsity=0.1, scale_sig=1, estimator="analytic
             """
             # Compute the Jacobian (partial derivatives) of f with respect to x
             jacobian_f = jax.jacobian(f, argnums=0)(x, *args)
-            
-            print(jacobian_f.shape, (x.shape[-1], x.shape[-1]), x.shape)
-            
-            assert jacobian_f.shape == (x.shape[-1], x.shape[-1])
+            # jacobian_f_abs = jnp.abs(jacobian_f)
             
             # jacobian_sig = jax.jacobian(sigma, argnums=0)(x, *args)
+            # jacobian_sig_normed = jnp.linalg.norm(jacobian_sig, axis=1)
+            
+            # sig = sigma(x, *args)
+            # sig_abs = jnp.abs(sig)
+            
+            # W = 2*jacobian_f_abs + jacobian_sig_normed + sig_abs
+            
             # Square each entry of the Jacobian and take the mean
             if abs_func == "abs":
                 W = jnp.abs(jacobian_f)
@@ -85,6 +90,14 @@ def notreks_loss(f, sigma, target_sparsity=0.1, scale_sig=1, estimator="analytic
             #sparsity_threshhold = jnp.quantile(no_treks_W, 1 - target_sparsity)
             #no_treks_W = jax.nn.sigmoid(scale_sig * (W - sparsity_threshhold))
             return no_treks_W[marg_indeps_idx].sum()
+            
+            
+            # W = jnp.mean(compute_W(x, args), axis=0)
+            # W = W / jnp.linalg.norm(W)
+            
+            # no_treks_W = no_treks(W)
+            
+            # return no_treks_W[marg_indeps_idx].sum()
 
         def loss(x, marg_indeps, *args):
             """
@@ -102,6 +115,7 @@ def notreks_loss(f, sigma, target_sparsity=0.1, scale_sig=1, estimator="analytic
             
             loss_values = compute_loss_term(x, marg_indeps_idx, args)
             return loss_values.mean()
+            # return loss_values
 
     else:
         raise ValueError(f"Unknown estimator `{estimator}`.")

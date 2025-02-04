@@ -60,7 +60,7 @@ def matern_52_kernel(x, y, ls):
     return (1.0 + jnp.sqrt(5) * r / ls + 5 * r2 / (3 * (ls ** 2))) * jnp.exp(- jnp.sqrt(5) * r / ls)
 
 
-# @jax.jit
+@jax.jit
 def mmd_fun(target_x, target_y, ls):
     n_x, n_y = target_x.shape[-2], target_y.shape[-2]
 
@@ -74,28 +74,28 @@ def mmd_fun(target_x, target_y, ls):
     return dis
 
 
-# @jax.jit
+@jax.jit
 def mse_fun(samples_pred, samples_target):
     mu_pred = samples_pred.mean(-2)
     mu_tar = samples_target.mean(-2)
     return jnp.square(mu_pred - mu_tar).mean(-1)
 
 
-# @jax.jit
+@jax.jit
 def relmse_fun(samples_pred, samples_target):
     mu_pred = samples_pred.mean(-2)
     mu_tar = samples_target.mean(-2)
     return (jnp.square(mu_pred - mu_tar).sum(-1) ** 0.5) / (jnp.square(mu_tar).sum(-1) ** 0.5)
 
 
-# @jax.jit
+@jax.jit
 def vse_fun(samples_pred, samples_target):
     std_pred = samples_pred.std(-2)
     std_tar = samples_target.std(-2)
     return jnp.square(std_pred - std_tar).mean(-1)
 
 
-# @jax.jit
+@jax.jit
 def kde_nll_fun(pred, target):
     n_pred, d = pred.shape
     bw_scotts = float(n_pred) ** float(-1. / (d + 4))
@@ -111,7 +111,7 @@ def kde_nll_fun(pred, target):
     return - ll.mean(0)
 
 
-# @jax.jit
+@jax.jit
 def wasserstein_fun(target_x, target_y, epsilon):
     assert target_x.ndim == target_y.ndim == 2 and target_x.shape[-1] == target_y.shape[-1]
     a = jnp.ones(len(target_x)) / len(target_x)
@@ -225,7 +225,7 @@ def make_metric(metr_fun_envs, *args, sampler, n=256):
     Helper function for evaluating a metric evaluating in parallel over multiple environments
     using a sampler and target data
     """
-    # @jax.jit
+    @jax.jit
     def _metric_fun(key, targets, intv_param):
         # simulate model rollouts for each env
         key, subk = random.split(key)

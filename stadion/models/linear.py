@@ -1,6 +1,6 @@
 import functools
 
-from jax import vmap
+from jax import random, vmap
 import jax.numpy as jnp
 import jax.lax as lax
 from scipy.linalg import solve_continuous_lyapunov
@@ -25,7 +25,7 @@ class LinearSDE(KDSMixin, SDE):
         sparsity_regularizer (str, optional): Type of sparsity regularizer to use.
             Implemented are: ``outgoing,``ingoing``,``both`.`
         dependency_regularizer: (str, optional) decides on the method to penalize dependence.
-            ``NO TREKS,``Non-Structural``,``both``, ``None``.
+            ``NO TREKS,``Lyapunov``,``both``, ``None``.
         no_neighbors: (bool, optional) masks dependency of functions for
             ``independent`` variables.
         sde_kwargs (dict, optional): any keyword arguments passed to ``SDE`` superclass.
@@ -48,6 +48,7 @@ class LinearSDE(KDSMixin, SDE):
         self.notreks_loss = notreks_loss(self.f, self.sigma) if dependency_regularizer in ("both", "NO TREKS") else None
         self.no_neighbors = no_neighbors
         self.marg_indeps = None
+        self.key = None
 
 
     def init_param(self, key, d, scale=1e-6, fix_speed_scaling=True, marg_indeps=None):
@@ -55,6 +56,8 @@ class LinearSDE(KDSMixin, SDE):
         Samples random initialization of the SDE model parameters.
         See :func:`~stadion.inference.KDSMixin.init_param`.
         """
+        self.key = key
+        
         shape = {
             "weights": jnp.zeros((d, d)),
             "biases": jnp.zeros((d,)),
@@ -280,7 +283,7 @@ class LinearSDE(KDSMixin, SDE):
         return Sigma
     
     @staticmethod
-    def regularize_dependence_non_structural(marg_indeps, param, intv_param):
+    def regularize_dependence_lyapunov(marg_indeps, param, intv_param):
         M = param["weights"]
         is_stable = is_hurwitz_stable(M)
         
@@ -329,13 +332,18 @@ class LinearSDE(KDSMixin, SDE):
             return 0
         elif self.dependency_regularizer == "NO TREKS":
             reg = LinearSDE.regularize_dependence_no_treks(self.notreks_loss, x, marg_indeps, param, intv_param)
-        elif self.dependency_regularizer == "Non-Structural":
-            reg = LinearSDE.regularize_dependence_non_structural(marg_indeps, param, intv_param)
+        elif self.dependency_regularizer == "Lyapunov":
+            reg = LinearSDE.regularize_dependence_lyapunov(marg_indeps, param, intv_param)
         elif self.dependency_regularizer == "both":
-            reg = LinearSDE.regularize_dependence_non_structural(marg_indeps, param, intv_param)\
+            reg = LinearSDE.regularize_dependence_lyapunov(marg_indeps, param, intv_param)\
                 + LinearSDE.regularize_dependence_no_treks(self.notreks_loss, x, marg_indeps, param, intv_param)
         else:
             raise ValueError(f"Unknown dependence regularizer `{self.dependency_regularizer}`")
+        
+        # self.param = param
+        # self.key, subk = random.split(self.key)
+        # self.sample(subk, x.shape[0], intv_param=intv_param)
+        
         return reg
 
 

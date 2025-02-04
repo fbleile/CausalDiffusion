@@ -310,21 +310,21 @@ class SDE(ABC):
             
             if return_traj:
                 samples, traj, log = samples
-                samples_list.append(onp.array(samples))
-                traj_list.append(onp.array(traj) if traj is not None else None)
-                log_list.append(onp.array(log) if log is not None else None)
+                samples_list.append(jnp.array(samples))
+                traj_list.append(jnp.array(traj) if traj is not None else None)
+                log_list.append(jnp.array(log) if log is not None else None)
             else:
-                samples_list.append(onp.array(samples))
+                samples_list.append(jnp.array(samples))
             
             
             
-        samples = onp.stack(samples_list)
+        samples = jnp.stack(samples_list)
         
         if return_traj:
-            traj = onp.stack(traj_list) if traj_list[0] is not None else None
+            traj = jnp.stack(traj_list) if traj_list[0] is not None else None
             # Assuming log_list contains numpy arrays of empty dictionaries and you're stacking them
             log = {k: [d[0].get(k) for d in log_list 
-                        if isinstance(d, onp.ndarray) 
+                        if isinstance(d, jnp.ndarray) 
                         and d.size > 0  # Check if d has elements
                         and d.ndim > 0  # Ensure d is at least 1D
                         and isinstance(d[0], dict)] 

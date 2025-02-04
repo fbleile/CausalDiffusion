@@ -10,6 +10,8 @@ import jax.numpy as jnp
 import numpy as onp
 from experiment.utils.parse import timer
 
+from stadion.parameters import ModelParameters, InterventionParameters
+
 INFINITY = 1e4
 
 def moving_average(a, n=3) :
@@ -24,9 +26,9 @@ def check_if_stable(samples):
     return ~onp.any(nan | inf, axis=(-1, -2))
 
 
-def estimate_stats(sampler, *args):
+def estimate_stats(sampler, *args, **kwargs):
     # simulate
-    samples = onp.array(sampler(*args))
+    samples = onp.array(sampler(*args, **kwargs))
 
     # check stable
     stable = check_if_stable(samples)
@@ -40,7 +42,7 @@ def estimate_stats(sampler, *args):
            stable
 
 
-def search_intv_theta_shift(key, *, theta, intv_theta, target_means, target_intv, sampler, n_samples,
+def search_intv_theta_shift(key, *, theta, intv_param, target_means, target_intv, sampler, n_samples,
                             exp_fact_init=0.1,
                             n_powers=20,
                             rel_eps=1.0,
@@ -56,12 +58,14 @@ def search_intv_theta_shift(key, *, theta, intv_theta, target_means, target_intv
     Assumes that the intervention w(x_j - c) induces a shift proportional to +c on x_j if w < 0
     """
     print("\nStarting test intv_theta shift estimation...", flush=True)
+    
+    intv_theta = intv_param._store
 
     assert ave % 2 == 1, "Select ood moving average size to select an exact center"
     assert "shift" in intv_theta
     assert target_means.ndim == 2
     assert target_means.shape == intv_theta["shift"].shape[:2]
-    assert onp.allclose(intv_theta["shift"], 0.0), "Should init intv_theta test shifts at 0.0"
+    # assert onp.allclose(intv_theta["shift"], 0.0), "Should init intv_theta test shifts at 0.0"
 
     # skip observational dimensions
     observ_mask = onp.all(target_intv == 0, axis=1)
@@ -87,8 +91,11 @@ def search_intv_theta_shift(key, *, theta, intv_theta, target_means, target_intv
 
         intv_theta_observ = intv_theta.copy()
         key, subk = random.split(key)
-        observ_means, observ_stds, is_observ_stable = estimator(subk, theta, intv_theta_observ,
-                                                                onp.zeros_like(target_intv).astype(onp.int32))
+        observ_means, observ_stds, is_observ_stable = \
+            estimator(subk, intv_param=InterventionParameters(
+                                            parameters = intv_theta,
+                                            targets = intv_param.targets,
+                                        ))
 
         log_dict["sanity/test-search/0-observ-stable"] = int(is_observ_stable.all())
 
@@ -167,7 +174,10 @@ def search_intv_theta_shift(key, *, theta, intv_theta, target_means, target_intv
 
                 # simulate rollouts
                 key, subk = random.split(key)
-                means, _, stable_i = estimator(subk, theta, param, target_intv)
+                means, _, stable_i = estimator(subk, intv_param=InterventionParameters(
+                                                parameters = param,
+                                                targets = intv_param.targets,
+                                            ))
                 assert means.shape == target_means.shape
                 assert means[intv_sel].shape == stable_i.shape == (n_envs,)
 
@@ -279,7 +289,10 @@ def search_intv_theta_shift(key, *, theta, intv_theta, target_means, target_intv
 
             # simulate rollouts
             key, subk = random.split(key)
-            means, _, stable_i = estimator(subk, theta, param, target_intv)
+            means, _, stable_i = estimator(subk, intv_param=InterventionParameters(
+                                            parameters = param,
+                                            targets = intv_param.targets,
+                                        ))
 
             if not onp.all(stable_i | ~stable):
                 warnings.warn(f"\nStep 2: unstable simulation discovered in presumably stable regime\n"

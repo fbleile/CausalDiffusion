@@ -28,6 +28,7 @@ from experiment.utils.version_control import get_gpu_info, get_gpu_info2
 from experiment.utils.metrics import make_mse, make_wasserstein
 
 from stadion.models import LinearSDE
+from stadion.parameters import ModelParameters, InterventionParameters
 
 def run_algo_wandb(wandb_config=None, eval_mode=False):
     """Function run by wandb.agent()"""
@@ -141,7 +142,7 @@ def run_algo(train_targets, test_targets, config=None, eval_mode=False, t_init=N
 
     if config.model == "linear":
         model = LinearSDE(
-                dependency_regularizer="NO TREKS", # Non-Structural",# "both", # 
+                dependency_regularizer="NO TREKS", # "Lyapunov",# "both", # 
                 no_neighbors=True,
             )
     elif config.model == "mlp":
@@ -169,14 +170,19 @@ def run_algo(train_targets, test_targets, config=None, eval_mode=False, t_init=N
         steps=config.steps,
         batch_size=config.batch_size,
         reg=config.reg_strength,
-        dep=0.1,
+        dep=config.dep_strength,
         warm_start_intv=True,
         verbose=10,
     )
     print(f"done.", flush=True)
 
 
-    """++++++++++++++ Plot ++++++++++++++"""
+    
+    """
+    ------------------------------------
+    Evaluation and logging
+    ------------------------------------
+    """
     print("Starting inference...")
     
     sampler = model.sample_envs
@@ -191,14 +197,34 @@ def run_algo(train_targets, test_targets, config=None, eval_mode=False, t_init=N
     wasserstein_accuracy_train = make_wasserstein(wasser_eps_train, sampler=sampler, n=config.metric_batch_size)
     wasserstein_accuracy_test = make_wasserstein(wasser_eps_test, sampler=sampler, n=config.metric_batch_size)
 
-    """
-    ------------------------------------
-    Evaluation and logging
-    ------------------------------------
-    """
     
     log_dict = {}
     
+    assert test_targets is not None
+    
+    # assumed information about test targets
+    test_target_intv = test_targets.intv
+    test_emp_means = test_target_intv * jnp.array([data.mean(-2) for data in test_targets.data])
+    
+    # # init new intv_theta_test with scale 0.0
+    # key, subk = random.split(key)
+    # intv_theta_test_init = init_intv_theta(subk, test_target_intv.shape[0], config.d,
+    #                                         scale_param=config.learn_intv_scale, scale=0.0)
+    
+    # update estimate of intervention effects in test set
+    key, subk = random.split(key)
+    intv_theta_test, logs = search_intv_theta_shift(subk,
+                                                    theta=model.param._store,
+                                                    intv_param=test_targets.intv_param,
+                                                    target_means=test_emp_means,
+                                                    target_intv=test_target_intv,
+                                                    sampler=sampler,
+                                                    n_samples=config.metric_batch_size)
+    intv_theta_test = InterventionParameters(
+            parameters= intv_theta_test,
+            targets=test_targets.intv_param.targets
+        )
+        
     # eval metrics
     key, subk = random.split(key)
     log_dict["mse_train"], _ = \
@@ -208,35 +234,16 @@ def run_algo(train_targets, test_targets, config=None, eval_mode=False, t_init=N
     log_dict["wasser_train"], _ = \
         wasserstein_accuracy_train(subk, train_targets, model.intv_param)
     
-    assert test_targets is not None
-    
-    # # assumed information about test targets
-    # test_target_intv = test_targets.intv
-    # test_emp_means = test_target_intv * jnp.array([data.mean(-2) for data in test_targets.data])
-    
-    # # init new intv_theta_test with scale 0.0
-    # key, subk = random.split(key)
-    # intv_theta_test_init = init_intv_theta(subk, test_target_intv.shape[0], config.d,
-    #                                        scale_param=config.learn_intv_scale, scale=0.0)
-    
-    # # update estimate of intervention effects in test set
-    # key, subk = random.split(key)
-    # intv_theta_test, logs = search_intv_theta_shift(subk, theta=theta,
-    #                                                 intv_theta=intv_theta_test_init,
-    #                                                 target_means=test_emp_means,
-    #                                                 target_intv=test_target_intv,
-    #                                                 sampler=sampler,
-    #                                                 n_samples=config.metric_batch_size)
-    
     # to compute metrics, use test data
     key, subk = random.split(key)
-    log_dict["mse_test"], _ = \
-        mse_accuracy(subk, test_targets, test_targets.intv_param)
+    log_dict["mse_test"], _ = mse_accuracy(subk, test_targets, intv_theta_test)
     
+    # key, subk = random.split(key)
+    # log_dict["wasser_test_my"], _= wasserstein_accuracy_test(subk, test_targets, test_targets.intv_param)
     key, subk = random.split(key)
-    log_dict["wasser_test"], _= \
-        wasserstein_accuracy_test(subk, test_targets, test_targets.intv_param)
+    log_dict["wasser_test"], _= wasserstein_accuracy_test(subk, test_targets, intv_theta_test)
     
+    """++++++++++++++ Plot ++++++++++++++"""
     if False:
         for plot_suffix, plot_tars, plot_intv_param in [("train", train_targets, model.intv_param),
                                                         ("test", test_targets, test_targets.intv_param)]:
@@ -316,7 +323,7 @@ if __name__ == "__main__":
     debug_config = Namespace()
 
     # fixed
-    debug_config.seed = 5
+    debug_config.seed = 10
 
     # data
     debug_config.data_config = "dev/linear.yaml"
@@ -328,7 +335,7 @@ if __name__ == "__main__":
     debug_config.sampler_eps = 0.0
     debug_config.reg_eps = 0.0
 
-    debug_config.init_scale = 0.1
+    debug_config.init_scale = 0.01
     debug_config.init_diag = 0.0
     debug_config.init_intv_at_mean = True
     debug_config.learn_intv_scale = False
@@ -341,12 +348,12 @@ if __name__ == "__main__":
     debug_config.batch_size = 192
     debug_config.batch_size_env = 1
     debug_config.bandwidth = 5.0
-    debug_config.reg_strength = 0.01
+    debug_config.reg_strength = 0.1
     debug_config.reg_type = "glasso"
     debug_config.grad_clip_val = None
     debug_config.force_linear_diag = True
     
-    debug_config.dep_strength = 1
+    debug_config.dep_strength = 10
 
     debug_config.steps = 10000
     debug_config.optimizer = "adam"

@@ -1,6 +1,6 @@
-from jax import random, numpy as jnp
-import jax
-from jax import numpy as jnp, random, tree_map
+from jax import random, vmap, tree_map
+import jax.numpy as jnp
+import numpy as onp
 from stadion.models import LinearSDE
 from pprint import pprint
 import networkx as nx
@@ -198,7 +198,7 @@ if __name__ == "__main__":
 
     # fit stationary diffusion model
     model = LinearSDE(
-            # dependency_regularizer="NO TREKS", # Non-Structural",# "both", # 
+            # dependency_regularizer="NO TREKS", # "Lyapunov",# "both", # 
             # no_neighbors=True,
         )
     key, subk = random.split(key)
@@ -206,7 +206,7 @@ if __name__ == "__main__":
         subk,
         [data, data_a, data_b],
         targets=[jnp.zeros(d), targets_a, targets_b],
-        steps=2*10000,
+        steps=2000,
         marg_indeps=marg_indeps,
         dep=1
     )
