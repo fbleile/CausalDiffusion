@@ -20,8 +20,7 @@ def RBFkernel(x, y=None, bw=5.0):
     
     # Use `vmap` to calculate the kernel for all pairs of x and y
     def kernel_pairwise(x_i, y_j):
-        sq_dists = jnp.sum((x_i - y_j) ** 2, axis=-1)  # Squared distance
-        return jnp.exp(-sq_dists / (2 * bw * bw))  # RBF kernel
+        return jnp.exp(-(x_i - y_j) ** 2 / (2 * bw * bw))  # RBF kernel
 
     # Vectorize the kernel computation across batches
     vmap_kernel = jax.vmap(jax.vmap(kernel_pairwise, in_axes=(0, None), out_axes=0), in_axes=(None, 0), out_axes=0)
@@ -257,9 +256,11 @@ def get_studentized_cross_hsic(XX, YY, kernel_X=None, kernel_Y=None):
     return stat
 
 # Fast HSIC test (already implemented, assuming crossHSIC_test exists)
-def my_fast_hsic_test(X, Y, kernel_X, kernel_Y, alpha=0.05):
+def fast_hsic_test(X, Y, kernel_X=None, kernel_Y=None, alpha=0.05):
     assert isinstance(X, jnp.ndarray), "X must be a jnp array"
     assert isinstance(Y, jnp.ndarray), "Y must be a jnp array"
+    kernel_X = RBFkernel if kernel_X is None else kernel_X
+    kernel_Y = RBFkernel if kernel_Y is None else kernel_Y
     th = stats.norm.ppf(1-alpha) 
     stat = get_studentized_cross_hsic(X, Y, kernel_X, kernel_Y)
     return 1.0*(stat>th)

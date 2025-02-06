@@ -164,12 +164,12 @@ def make_mask(key, config):
         
         miss_treks = get_all_missing_treks(mask)
         if config["marg_indeps"] <= len(miss_treks):
-            # key, subk = random.split(key)
-            # marg_indeps = random.choice(subk, 
-            #                   jnp.array(miss_treks),  # Convert to JAX array
-            #                   shape=(config["marg_indeps"],), 
-            #                   replace=False)  # No replacement
-            marg_indeps = miss_treks
+            key, subk = random.split(key)
+            marg_indeps = random.choice(subk, 
+                              jnp.array(miss_treks),  # Convert to JAX array
+                              shape=(config["marg_indeps"],), 
+                              replace=False)  # No replacement
+            # marg_indeps = miss_treks
             break
     return mask, marg_indeps
 

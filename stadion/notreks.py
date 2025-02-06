@@ -1,5 +1,6 @@
 from functools import partial
 import jax.numpy as jnp
+import jax.nn as jnn
 from jax import vmap, random
 import jax.scipy.linalg
 import functools
@@ -15,7 +16,7 @@ def no_treks(W):
     return trek_W
 
 # @functools.partial(jax.jit, static_argnums=(0,1))
-def notreks_loss(model, estimator="crosshsic", abs_func="abs", normalize="norm"):
+def notreks_loss(model, estimator="analytic", abs_func="abs", normalize="norm"):
     """
     Compute the notreks loss for the drift (f) and diffusion (sigma) functions of an SDE.
 
@@ -23,7 +24,7 @@ def notreks_loss(model, estimator="crosshsic", abs_func="abs", normalize="norm")
         f (callable): Drift function of the SDE.
         sigma (callable): Diffusion function of the SDE.
         target_sparsity (float): Target sparsity level for the sigmoid application.
-        estimator (str): Method for calculating the loss (currently only "analytic" "cross hsic" is supported).
+        estimator (str): Method for calculating the loss (currently only "analytic" "crosshsic" is supported).
         abs_func (str): Method for ensuring non-negative matrix entries ("abs" or "square").
         normalize (str): Method for normalizeing matrix entries ("sigm" or "norm").
 
@@ -100,35 +101,36 @@ def notreks_loss(model, estimator="crosshsic", abs_func="abs", normalize="norm")
             model.key, subk = random.split(model.key)
             samples = model.sample(
                 subk,
-                2 * x.shape[0],
+                x.shape[0],
                 intv_param=intv_param,
                 x_0=x,
                 burnin=False,
             )
             
+            # print(x.shape, samples.shape)
             D = x.shape[-1]
             W = jnp.zeros((D, D))  # Initialize D × D matrix
             
-            # Generate all (i, j) pairs where j < i
-            i_indices, j_indices = jnp.where(jnp.ones((D, D)))
+            # Generate all index pairs (i, j) for a D x D matrix
+            indices = jnp.indices((D, D))
+            i_indices, j_indices = indices[0].flatten(), indices[1].flatten()
         
             # Function to compute HSIC for a single (i, j) pair
             def compute_hsic(i, j):
-                X_i, X_j = samples[i, :], x[j, :]
-                return get_studentized_cross_hsic(X_i, X_j)
+                X_i, X_j = x[:,i], samples[:,j]
+                cross_hsic = get_studentized_cross_hsic(X_i, X_j)
+                return cross_hsic
         
             # Vectorize computations with jax.vmap
             compute_hsic_vmap = jax.vmap(compute_hsic, in_axes=(0, 0))
             hsic_values = compute_hsic_vmap(i_indices, j_indices)
-        
-            # Fill both lower and upper triangular parts
-            W = W.at[i_indices, j_indices].set(hsic_values)  # Lower triangle
-            W = W.at[j_indices, i_indices].set(hsic_values)  # Upper triangle (symmetric)
-        
+            
+            W = W.at[i_indices, j_indices].set(hsic_values)
+            # print(W)
             # sig = sigma(x, *args)
             # sig_abs = jnp.abs(sig)
         
-            return W
+            return jnn.relu(W - CROSS_HSIC_TH)
 
     else:
         raise ValueError(f"Unknown estimator `{estimator}`.")

@@ -9,7 +9,7 @@ import jax
 from jax import vmap
 from jax import numpy as jnp, lax, random, tree_map
 from functools import partial
-
+from stadion.crosshsic import fast_hsic_test
 
 class SDE(ABC):
     """
@@ -326,6 +326,33 @@ class SDE(ABC):
             return samples, traj, log
         else:
             return samples
+        
+    
+    def get_dep_ratio(self, key, param, n_samples=1000):
+        # save parameters
+        self.param = param
+        
+        key, subk = random.split(key)
+        samples = self.sample(
+            key,
+            n_samples,
+        )
+        
+        marg_indeps = self.marg_indeps[0]
+        
+        # Function to compute HSIC for a single (i, j) pair
+        @partial(vmap, in_axes=(0, 0), out_axes=0)
+        def compute_hsic(i, j):
+            X_i, X_j = samples[:,i], samples[:,j]
+            cross_hsic = fast_hsic_test(X_i, X_j)
+            return cross_hsic
+    
+        # Vectorize computations with jax.vmap
+        hsic_values = compute_hsic(marg_indeps[:, 0], marg_indeps[:, 1])
+        
+        result = jnp.column_stack([marg_indeps, hsic_values])
+        
+        return 1 - sum(hsic_values) / len(hsic_values)
         
 # # Extract parameters dictionary
 # params = intv_param._store

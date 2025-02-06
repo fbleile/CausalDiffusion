@@ -143,7 +143,7 @@ def run_algo(train_targets, test_targets, config=None, eval_mode=False, t_init=N
     if config.model == "linear":
         model = LinearSDE(
                 subk,
-                dependency_regularizer="NO TREKS", # "Lyapunov",# "both", # 
+                dependency_regularizer="NO TREKS", # "SampleBackprop", # "SampleCrossHSIC", # "Lyapunov",# "both", # 
                 no_neighbors=True,
                 sde_kwargs = {key: value for key, value in config["sde"].items()} if "sde" in config else None,
             )
@@ -156,8 +156,6 @@ def run_algo(train_targets, test_targets, config=None, eval_mode=False, t_init=N
 
     """++++++++++++++   Fit Model with Data   ++++++++++++++"""
     n_train_envs = len(train_targets.data)
-    
-    print(f'marg_indeps: {train_targets.marg_indeps}')
 
     print(f"Fitting Model", flush=True)
     key, subk = random.split(key)
@@ -328,7 +326,9 @@ if __name__ == "__main__":
     debug_config.seed = 100
 
     # data
-    debug_config.data_config = "/Users/bleile/Master/Thesis Work/CausalDiffusion/config/dev/linear.yaml"
+    # debug_config.data_config = "/Users/bleile/Master/Thesis Work/CausalDiffusion/config/dev/linear10.yaml"
+    debug_config.data_config = "/Users/bleile/Master/Thesis Work/CausalDiffusion/config/dev/linear20.yaml"
+
     
     print(debug_config)
     # debug_config.data_config = "dev/sergio.yaml"

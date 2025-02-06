@@ -357,12 +357,14 @@ class KDSMixin(SDE, ABC):
                 t_loop = time.time()
                 ave_logs = retrieve_ave(logs)
                 logs = defaultdict(float)
+                dep_ratio = self.get_dep_ratio(key, param)
                 print_str = f"step: {t: >5d} " \
                             f"kds: {ave_logs['kds_loss']: >12.6f}  | " \
                             f"reg: {ave_logs['reg_penalty']: >12.6f}  | " \
                             f"dep: {ave_logs['dep_penalty']: >12.6f}  | " \
-                            f"min remain: {(steps - t) * t_elapsed / log_every / 60.0: >4.1f}  " \
-                            f"sec/step: {t_elapsed / log_every: >5.3f}"
+                            f"min remain: {(steps - t) * t_elapsed / log_every / 60.0: >4.1f}  |" \
+                            f"sec/step: {t_elapsed / log_every: >5.3f} |" \
+                            f"DepRatio: {dep_ratio:.2f}"
                 print(print_str, flush=True)
 
         if targets is not None and intv_param.targets is not None:

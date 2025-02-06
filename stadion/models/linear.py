@@ -1,5 +1,6 @@
 import functools
-
+import jax
+import jax.nn as jnn
 from jax import random, vmap
 import jax.numpy as jnp
 import jax.lax as lax
@@ -11,6 +12,7 @@ from stadion.inference import KDSMixin
 from stadion.utils import to_diag, tree_global_norm, tree_init_normal, \
     marg_indeps_to_indices, is_hurwitz_stable, get_one_hot_index
 from stadion.notreks import notreks_loss
+from stadion.crosshsic import get_studentized_cross_hsic, CROSS_HSIC_TH
 
 
 class LinearSDE(KDSMixin, SDE):
@@ -329,6 +331,52 @@ class LinearSDE(KDSMixin, SDE):
         dep_loss = loss(x, marg_indeps, param, intv_param)
         return dep_loss
     
+    def regularize_dependence_sample_crosshsic(self, x, marg_indeps, param, intv_param):
+        
+        # save parameters
+        self.param = param
+        
+        self.key, subk = random.split(self.key)
+        samples = self.sample(
+            subk,
+            x.shape[0],
+            intv_param=intv_param,
+        )
+        
+        # Extract pairs (i, j) from marg_indeps
+        i_indices, j_indices = marg_indeps[:, 0], marg_indeps[:, 1]
+        
+        # Function to compute HSIC for a single (i, j) pair
+        def compute_hsic(i, j):
+            X_i, X_j = samples[:,i], samples[:,j]
+            cross_hsic = get_studentized_cross_hsic(X_i, X_j)
+            return cross_hsic
+    
+        # Vectorize computations with jax.vmap
+        compute_hsic_vmap = jax.vmap(compute_hsic, in_axes=(0, 0))
+        hsic_values = compute_hsic_vmap(i_indices, j_indices)
+        
+        return 0.01 * jnp.sum(jnn.relu(hsic_values - CROSS_HSIC_TH))
+    
+    def regularize_dependence_sample_backprop(self, x, marg_indeps, param, intv_param):
+        
+        # save parameters
+        self.param = param
+    
+        self.key, subk = random.split(self.key)
+        jacobian_f = jax.jacobian(self.sample, argnums=3)(
+            subk,
+            10,
+            intv_param=intv_param,
+            x_0=x)
+        
+        W = jacobian_f / jnp.linalg.norm(jacobian_f)
+        
+        indices = jnp.vstack([marg_indeps, marg_indeps[:, [1, 0]]])
+        i_indices, j_indices = indices[:, 0].flatten(), indices[:, 1].flatten()
+        
+        return jnp.sum(jnp.square(W)[i_indices, j_indices])
+    
     def regularize_dependence(self, x, marg_indeps, param, intv_param):
         # ``NO TREKS,``Non-Structural``,``both``, ``None``.
         if self.dependency_regularizer == "None":
@@ -337,6 +385,10 @@ class LinearSDE(KDSMixin, SDE):
             reg = LinearSDE.regularize_dependence_no_treks(self.notreks_loss, x, marg_indeps, param, intv_param)
         elif self.dependency_regularizer == "Lyapunov":
             reg = LinearSDE.regularize_dependence_lyapunov(marg_indeps, param, intv_param)
+        elif self.dependency_regularizer == "SampleCrossHSIC":
+            reg = self.regularize_dependence_sample_crosshsic(x, marg_indeps, param, intv_param)
+        elif self.dependency_regularizer == "SampleBackprop":
+            reg = self.regularize_dependence_sample_crosshsic(x, marg_indeps, param, intv_param)
         elif self.dependency_regularizer == "both":
             reg = LinearSDE.regularize_dependence_lyapunov(marg_indeps, param, intv_param)\
                 + LinearSDE.regularize_dependence_no_treks(self.notreks_loss, x, marg_indeps, param, intv_param)
