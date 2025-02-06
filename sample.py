@@ -4,7 +4,7 @@ from core import make_target_standardizer, make_sergio_standardizer
 
 from synthetic import synthetic_sde_data
 from scm import synthetic_scm_data
-from assets.sergio.sergio import simulate as sergio_sampler
+from utils.sergio import simulate as sergio_sampler
 
 def make_data(*, seed, config):
 

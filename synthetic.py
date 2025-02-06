@@ -322,7 +322,7 @@ def synthetic_sde_data(seed, config):
     
     # fit stationary diffusion model
     model = LinearSDE(
-        sde_kwargs={key: value for key, value in config["sde"].items()}
+        sde_kwargs = {key: value for key, value in config["sde"].items()} if "sde" in config else None
     )
     
     model.n_vars = config['n_vars']

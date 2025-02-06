@@ -11,7 +11,7 @@ import jax.random as random
 from jax import jacrev, vmap, jit
 import jax.numpy as jnp
 
-from experiment.utils.tree import iter_tree
+from utils.tree import iter_tree
 
 from typing import NamedTuple, Any
 

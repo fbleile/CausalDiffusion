@@ -124,7 +124,7 @@ def wasserstein_fun(target_x, target_y, epsilon):
         a=a,
         b=b,
         epsilon=epsilon,
-        symmetric_sinkhorn=False,
+        # symmetric_sinkhorn=False,
     )
     # If it's a tuple, extract the first element
     if isinstance(out_xy, tuple):

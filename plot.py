@@ -7,7 +7,7 @@ import pandas as pd
 from jax import numpy as jnp
 from matplotlib import pyplot as plt
 
-from experiment.utils.plot_data import scatter_matrix, get_2d_percentile_contours
+from utils.plot_data import scatter_matrix, get_2d_percentile_contours
 from pandas.plotting import autocorrelation_plot
 from scipy.stats import gaussian_kde
 from mpl_toolkits.axes_grid1 import make_axes_locatable

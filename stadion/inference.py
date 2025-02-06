@@ -240,11 +240,10 @@ class KDSMixin(SDE, ABC):
         sharding = PositionalSharding(mesh)
 
         # initialize parameters and load to device (replicate across devices)
-        key, subk = random.split(key)
-        param = self.init_param(subk, self.n_vars, marg_indeps=marg_indeps)
+        param = self.init_param(self.n_vars, marg_indeps=marg_indeps)
 
         key, subk = random.split(key)
-        intv_param = self.init_intv_param(subk, self.n_vars, n_envs=n_envs, targets=targets,
+        intv_param = self.init_intv_param(self.n_vars, n_envs=n_envs, targets=targets,
                             x=x if warm_start_intv else None)
 
         param = jax.device_put(param, sharding.replicate())
@@ -320,8 +319,8 @@ class KDSMixin(SDE, ABC):
             # logging
             grad_norm = linear_algebra.global_norm(dparam)
             intv_grad_norm = linear_algebra.global_norm(dintv_param)
-            nan_occurred_param = tree_isnan(dparam) | tree_isnan(param)
-            nan_occurred_intv_param = tree_isnan(dintv_param) | tree_isnan(intv_param)
+            nan_occurred_param = jnp.logical_or(tree_isnan(dparam), tree_isnan(param))
+            nan_occurred_intv_param = jnp.logical_or(tree_isnan(dintv_param), tree_isnan(intv_param))
             aux = dict(loss=l,
                        **l_aux,
                        grad_norm=grad_norm,
@@ -331,6 +330,8 @@ class KDSMixin(SDE, ABC):
 
             return (param_, intv_param_, opt_state_), aux
 
+        # update_step = jax.jit(update_step, static_argnums=())  # Store original JIT function
+        # debug_update_step = update_step.lower().compile()  # Compile it to debug
 
         # optimization loop
         logs = defaultdict(float)
@@ -344,8 +345,9 @@ class KDSMixin(SDE, ABC):
 
             # update step
             key, subk = random.split(key)
-            (param, intv_param, opt_state), logs_t = \
-                update_step(subk, batch, param, intv_param, opt_state)
+            (param, intv_param, opt_state), logs_t = update_step(subk, batch, param, intv_param, opt_state)
+                
+            # (param, intv_param, opt_state), logs_t = debug_update_step(subk, batch, param, intv_param, opt_state)  # Call without JIT
 
             # update average of training metrics
             logs = update_ave(logs, logs_t)

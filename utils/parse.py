@@ -21,11 +21,11 @@ import jax.numpy as jnp
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from experiment.definitions import PROJECT_DIR, FILE_X, FILE_INTV, FILE_TRUE_PARAM, FILE_DATA_SANITY_CHECKS, FILE_TRAJ, \
+from definitions import PROJECT_DIR, FILE_X, FILE_INTV, FILE_TRUE_PARAM, FILE_DATA_SANITY_CHECKS, FILE_TRAJ, \
     FILE_META_DATA
-from experiment.core import Data, get_intv_stats
-from experiment.plot_config import *
-from experiment.utils.plot_data import scatter_matrix
+from core import Data, get_intv_stats
+from plot_config import *
+from utils.plot_data import scatter_matrix
 
 types_list = [list]
 types_dict = [dict, defaultdict, OrderedDict]

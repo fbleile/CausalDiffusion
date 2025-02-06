@@ -8,7 +8,7 @@ from functools import partial
 from jax import random, jit, tree_map
 import jax.numpy as jnp
 import numpy as onp
-from experiment.utils.parse import timer
+from utils.parse import timer
 
 from stadion.parameters import ModelParameters, InterventionParameters
 
@@ -28,7 +28,7 @@ def check_if_stable(samples):
 
 def estimate_stats(sampler, *args, **kwargs):
     # simulate
-    samples = onp.array(sampler(*args, **kwargs))
+    samples = jnp.array(sampler(*args, **kwargs))
 
     # check stable
     stable = check_if_stable(samples)

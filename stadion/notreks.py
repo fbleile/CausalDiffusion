@@ -1,7 +1,10 @@
 from functools import partial
 import jax.numpy as jnp
-from jax import grad, vmap
+from jax import vmap, random
 import jax.scipy.linalg
+import functools
+
+from stadion.crosshsic import get_studentized_cross_hsic, CROSS_HSIC_TH
 
 from stadion.utils import marg_indeps_to_indices
 
@@ -11,7 +14,8 @@ def no_treks(W):
     
     return trek_W
 
-def notreks_loss(f, sigma, target_sparsity=0.1, scale_sig=1, estimator="analytic", abs_func="abs", normalize="norm"):
+# @functools.partial(jax.jit, static_argnums=(0,1))
+def notreks_loss(model, estimator="crosshsic", abs_func="abs", normalize="norm"):
     """
     Compute the notreks loss for the drift (f) and diffusion (sigma) functions of an SDE.
 
@@ -19,17 +23,21 @@ def notreks_loss(f, sigma, target_sparsity=0.1, scale_sig=1, estimator="analytic
         f (callable): Drift function of the SDE.
         sigma (callable): Diffusion function of the SDE.
         target_sparsity (float): Target sparsity level for the sigmoid application.
-        estimator (str): Method for calculating the loss (currently only "analytic" is supported).
+        estimator (str): Method for calculating the loss (currently only "analytic" "cross hsic" is supported).
         abs_func (str): Method for ensuring non-negative matrix entries ("abs" or "square").
         normalize (str): Method for normalizeing matrix entries ("sigm" or "norm").
 
     Returns:
         callable: A loss function taking the inputs of `f` and `sigma` as *args.
     """
+    
+    f, sigma = model.f, model.sigma
 
     if estimator == "analytic":
-        # @partial(vmap, in_axes=(0, None), out_axes=0)
-        def compute_W(x, args):
+        
+        # @jax.jit
+        @partial(vmap, in_axes=(0, None, None), out_axes=0)
+        def compute_W_x(x, marg_indeps, args):
             """
             Compute the weighted matrix for notreks calculation.
 
@@ -40,85 +48,113 @@ def notreks_loss(f, sigma, target_sparsity=0.1, scale_sig=1, estimator="analytic
             """
             # Compute the Jacobian (partial derivatives) of f with respect to x
             jacobian_f = jax.jacobian(f, argnums=0)(x, *args)
-            # jacobian_f_abs = jnp.abs(jacobian_f)
+            jacobian_f_abs = jnp.abs(jacobian_f)
             
-            # jacobian_sig = jax.jacobian(sigma, argnums=0)(x, *args)
-            # jacobian_sig_normed = jnp.linalg.norm(jacobian_sig, axis=1)
+            jacobian_sig = jax.jacobian(sigma, argnums=0)(x, *args)
+            jacobian_sig_normed = jnp.linalg.norm(jacobian_sig, axis=1)
             
-            # sig = sigma(x, *args)
-            # sig_abs = jnp.abs(sig)
+            sig = sigma(x, *args)
+            sig_abs = jnp.abs(sig)
             
-            # W = 2*jacobian_f_abs + jacobian_sig_normed + sig_abs
-            
-            # Square each entry of the Jacobian and take the mean
-            if abs_func == "abs":
-                W = jnp.abs(jacobian_f)
-            elif abs_func == "square":
-                W = jnp.square(jacobian_f)
-            else:
-                raise ValueError(f"Unknown method to ensure non-negative matrix entries `{abs_func}`.")
-                
-            if normalize == "sigm":
-                sparsity_threshhold = jnp.quantile(W, 1 - target_sparsity)
-                # Apply the sigmoid function entrywise to introduce sparsity
-                W = jax.nn.sigmoid(scale_sig * (W - sparsity_threshhold))
-            elif normalize == "norm":
-                W = W / jnp.linalg.norm(W)
-            elif normalize == "row and col norm":
-                # Calculate row norms
-                row_norms = jnp.linalg.norm(W, axis=1, keepdims=True)
-                # Calculate column norms
-                col_norms = jnp.linalg.norm(W, axis=0, keepdims=True)
-                
-                # Normalize each entry by its row and column norms
-                return 2*W / (row_norms * col_norms)
-            elif normalize == None:
-                W = W
-            else:
-                raise ValueError(f"Unknown method to normalize matrix entries `{normalize}`.")
-            
+            W = 2*jacobian_f_abs + jacobian_sig_normed + sig_abs
             
             return W
-
-        @partial(vmap, in_axes=(0, None, None), out_axes=0)
-        def compute_loss_term(x, marg_indeps_idx, args):
-            """
-            Compute the notreks loss term for each input `x`.
-            """
-            W = compute_W(x, args)
-            no_treks_W = no_treks(W)
-            #sparsity_threshhold = jnp.quantile(no_treks_W, 1 - target_sparsity)
-            #no_treks_W = jax.nn.sigmoid(scale_sig * (W - sparsity_threshhold))
-            return no_treks_W[marg_indeps_idx].sum()
             
+            # # Square each entry of the Jacobian and take the mean
+            # if abs_func == "abs":
+            #     W = jnp.abs(jacobian_f)
+            # elif abs_func == "square":
+            #     W = jnp.square(jacobian_f)
+            # else:
+            #     raise ValueError(f"Unknown method to ensure non-negative matrix entries `{abs_func}`.")
+                
+            # if normalize == "sigm":
+            #     sparsity_threshhold = jnp.quantile(W, 1 - target_sparsity)
+            #     # Apply the sigmoid function entrywise to introduce sparsity
+            #     W = jax.nn.sigmoid(scale_sig * (W - sparsity_threshhold))
+            # elif normalize == "norm":
+            #     W = W / jnp.linalg.norm(W)
+            # elif normalize == "row and col norm":
+            #     # Calculate row norms
+            #     row_norms = jnp.linalg.norm(W, axis=1, keepdims=True)
+            #     # Calculate column norms
+            #     col_norms = jnp.linalg.norm(W, axis=0, keepdims=True)
+                
+            #     # Normalize each entry by its row and column norms
+            #     return 2*W / (row_norms * col_norms)
+            # elif normalize == None:
+            #     W = W
+            # else:
+            #     raise ValueError(f"Unknown method to normalize matrix entries `{normalize}`.")
+        def compute_W(x, marg_indeps, args):
+            return jnp.mean(compute_W_x(x, marg_indeps, args), axis=0)
             
-            # W = jnp.mean(compute_W(x, args), axis=0)
-            # W = W / jnp.linalg.norm(W)
+    elif estimator == "crosshsic":
+        # @jax.jit
+        def compute_W(x, marg_indeps, args):
+            (param, intv_param) = args
             
-            # no_treks_W = no_treks(W)
+            # save parameters
+            model.param = param
             
-            # return no_treks_W[marg_indeps_idx].sum()
-
-        def loss(x, marg_indeps, *args):
-            """
-            Final loss function that calculates the average notreks loss.
-
-            Args:
-                x: Input samples to `f` and `sigma`.
-                *args: Parameters for `f` and `sigma`.
-
-            Returns:
-                Scalar loss value.
-            """
-            # print(f'marg_indeps in loss: {marg_indeps}')
-            marg_indeps_idx = marg_indeps_to_indices(marg_indeps)
+            model.key, subk = random.split(model.key)
+            samples = model.sample(
+                subk,
+                2 * x.shape[0],
+                intv_param=intv_param,
+                x_0=x,
+                burnin=False,
+            )
             
-            loss_values = compute_loss_term(x, marg_indeps_idx, args)
-            return loss_values.mean()
-            # return loss_values
+            D = x.shape[-1]
+            W = jnp.zeros((D, D))  # Initialize D × D matrix
+            
+            # Generate all (i, j) pairs where j < i
+            i_indices, j_indices = jnp.where(jnp.ones((D, D)))
+        
+            # Function to compute HSIC for a single (i, j) pair
+            def compute_hsic(i, j):
+                X_i, X_j = samples[i, :], x[j, :]
+                return get_studentized_cross_hsic(X_i, X_j)
+        
+            # Vectorize computations with jax.vmap
+            compute_hsic_vmap = jax.vmap(compute_hsic, in_axes=(0, 0))
+            hsic_values = compute_hsic_vmap(i_indices, j_indices)
+        
+            # Fill both lower and upper triangular parts
+            W = W.at[i_indices, j_indices].set(hsic_values)  # Lower triangle
+            W = W.at[j_indices, i_indices].set(hsic_values)  # Upper triangle (symmetric)
+        
+            # sig = sigma(x, *args)
+            # sig_abs = jnp.abs(sig)
+        
+            return W
 
     else:
         raise ValueError(f"Unknown estimator `{estimator}`.")
+    
+    def loss(x, marg_indeps, *args):
+        """
+        Final loss function that calculates the average notreks loss.
+
+        Args:
+            x: Input samples to `f` and `sigma`.
+            *args: Parameters for `f` and `sigma`.
+
+        Returns:
+            Scalar loss value.
+        """
+        # print(f'marg_indeps in loss: {marg_indeps}')
+        marg_indeps_idx = marg_indeps_to_indices(marg_indeps)
+        
+        W = compute_W(x, marg_indeps, args)
+        W = W / jnp.linalg.norm(W)
+        
+        no_treks_W = no_treks(W)
+        
+        loss_values = no_treks_W[marg_indeps_idx].sum()
+        
+        return loss_values
 
     return loss
 

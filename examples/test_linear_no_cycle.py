@@ -1,14 +1,12 @@
-from jax import random, vmap, tree_map
+import jax
+from jax import random
 import jax.numpy as jnp
-import numpy as onp
 from stadion.models import LinearSDE
-from pprint import pprint
 import networkx as nx
 
 import matplotlib.pyplot as plt
 
 from stadion.parameters import InterventionParameters
-from stadion.notreks import notreks_loss, no_treks
 from stadion.metrics import calculate_distances
 
 from itertools import combinations
@@ -195,18 +193,20 @@ if __name__ == "__main__":
     data_c2 = sample_scm(dag, n, key, noise_dist="gaussian", shift_intv = c * targets_c)
     
     marg_indeps = jnp.array([no_trek_nodes, no_trek_nodes, no_trek_nodes])
-
+    
+    key, subk = random.split(key)
     # fit stationary diffusion model
     model = LinearSDE(
-            # dependency_regularizer="NO TREKS", # "Lyapunov",# "both", # 
-            # no_neighbors=True,
+            subk,
+            dependency_regularizer="NO TREKS", # "Lyapunov",# "both", # 
+            no_neighbors=True,
         )
     key, subk = random.split(key)
     model.fit(
         subk,
         [data, data_a, data_b],
         targets=[jnp.zeros(d), targets_a, targets_b],
-        steps=2000,
+        steps=10000,
         marg_indeps=marg_indeps,
         dep=1
     )
@@ -219,6 +219,7 @@ if __name__ == "__main__":
     # pprint(intv_param)
     
     # in distribution test
+    key, subk = random.split(key)
     intv_param_a = intv_param.index_at(1)
     x_pred_a = model.sample(subk, 1000, intv_param=intv_param_a)
 
@@ -233,6 +234,7 @@ if __name__ == "__main__":
     }
     intv_param_c = InterventionParameters(parameters=param_c, targets=targets_c)
     
+    key, subk = random.split(key)
     x_pred_c = model.sample(subk, 1000, intv_param=intv_param_c)
 
     distances_c = calculate_distances(data_c, x_pred_c)

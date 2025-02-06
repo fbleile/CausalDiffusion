@@ -34,6 +34,7 @@ class LinearSDE(KDSMixin, SDE):
 
     def __init__(
         self,
+        key,
         sparsity_regularizer="both",
         dependency_regularizer="None",
         no_neighbors=False,
@@ -45,25 +46,26 @@ class LinearSDE(KDSMixin, SDE):
 
         self.sparsity_regularizer = sparsity_regularizer
         self.dependency_regularizer = dependency_regularizer
-        self.notreks_loss = notreks_loss(self.f, self.sigma) if dependency_regularizer in ("both", "NO TREKS") else None
+        self.key, subk = random.split(key)
+        self.notreks_loss = notreks_loss(self) if dependency_regularizer in ("both", "NO TREKS") else None
         self.no_neighbors = no_neighbors
         self.marg_indeps = None
-        self.key = None
 
 
-    def init_param(self, key, d, scale=1e-6, fix_speed_scaling=True, marg_indeps=None):
+    def init_param(self, d, scale=1e-6, fix_speed_scaling=True, marg_indeps=None):
         """
         Samples random initialization of the SDE model parameters.
         See :func:`~stadion.inference.KDSMixin.init_param`.
         """
-        self.key = key
         
         shape = {
             "weights": jnp.zeros((d, d)),
             "biases": jnp.zeros((d,)),
             "log_noise_scale": -2 * jnp.ones((d,)),
         }
-        param = tree_init_normal(key, shape, scale=scale)
+        
+        self.key, subk = random.split(self.key)
+        param = tree_init_normal(subk, shape, scale=scale)
         
         self.marg_indeps = marg_indeps
         
@@ -105,7 +107,7 @@ class LinearSDE(KDSMixin, SDE):
             )
 
 
-    def init_intv_param(self, key, d, n_envs=None, scale=1e-6, targets=None, x=None):
+    def init_intv_param(self, d, n_envs=None, scale=1e-6, targets=None, x=None):
         """
         Samples random initialization of the intervention parameters.
         See :func:`~stadion.inference.KDSMixin.init_intv_param`.
@@ -117,7 +119,8 @@ class LinearSDE(KDSMixin, SDE):
             "shift": jnp.zeros(vec_shape),
             "log_scale": jnp.zeros(vec_shape),
         }
-        intv_param = tree_init_normal(key, shape, scale=scale)
+        self.key, subk = random.split(self.key)
+        intv_param = tree_init_normal(subk, shape, scale=scale)
 
         # if provided, store intervened variables for masking
         if targets is not None:

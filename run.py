@@ -15,17 +15,17 @@ import numpy as onp
 
 from sklearn.decomposition import PCA
 
-from experiment.core import sample_dynamical_system, Data
-from experiment.plot import plot, plot_wandb_images
-from experiment.data import make_dataset, Batch, sample_batch_jax
-from experiment.intervention import search_intv_theta_shift
-from experiment.definitions import cpu_count, IS_CLUSTER, CONFIG_DIR
+from core import sample_dynamical_system, Data
+from plot import plot, plot_wandb_images
+from data import make_dataset, Batch, sample_batch_jax
+from intervention import search_intv_theta_shift
+from definitions import cpu_count, IS_CLUSTER, CONFIG_DIR
 
-from experiment.sample import make_data
+from sample import make_data
 
-from experiment.utils.parse import load_config
-from experiment.utils.version_control import get_gpu_info, get_gpu_info2
-from experiment.utils.metrics import make_mse, make_wasserstein
+from utils.parse import load_config
+from utils.version_control import get_gpu_info, get_gpu_info2
+from utils.metrics import make_mse, make_wasserstein
 
 from stadion.models import LinearSDE
 from stadion.parameters import ModelParameters, InterventionParameters
@@ -142,8 +142,10 @@ def run_algo(train_targets, test_targets, config=None, eval_mode=False, t_init=N
 
     if config.model == "linear":
         model = LinearSDE(
+                subk,
                 dependency_regularizer="NO TREKS", # "Lyapunov",# "both", # 
                 no_neighbors=True,
+                sde_kwargs = {key: value for key, value in config["sde"].items()} if "sde" in config else None,
             )
     elif config.model == "mlp":
         # TODO
@@ -323,10 +325,12 @@ if __name__ == "__main__":
     debug_config = Namespace()
 
     # fixed
-    debug_config.seed = 10
+    debug_config.seed = 100
 
     # data
-    debug_config.data_config = "dev/linear.yaml"
+    debug_config.data_config = "/Users/bleile/Master/Thesis Work/CausalDiffusion/config/dev/linear.yaml"
+    
+    print(debug_config)
     # debug_config.data_config = "dev/sergio.yaml"
 
     # model
@@ -355,7 +359,7 @@ if __name__ == "__main__":
     
     debug_config.dep_strength = 10
 
-    debug_config.steps = 10000
+    debug_config.steps = 20000
     debug_config.optimizer = "adam"
     debug_config.learning_rate = 0.001
 

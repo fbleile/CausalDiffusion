@@ -6,7 +6,9 @@ import copy
 
 import numpy as onp
 import jax
+from jax import vmap
 from jax import numpy as jnp, lax, random, tree_map
+from functools import partial
 
 
 class SDE(ABC):
@@ -124,18 +126,21 @@ class SDE(ABC):
         pass
 
 
-    @functools.partial(jax.jit, static_argnums=(0, 3, 4))
+    @functools.partial(jax.jit, static_argnums=(0, 3, 4, 6))
     def _simulate_dynamical_system(
         self,
         key,
         param,
         intv_param,
         n_samples,
+        x_0=None,
+        burnin=True,
     ):
 
         # compute horizon
-        n_rollouts = math.prod(self.rollouts_shape)
-        n_samples_per_rollout = math.ceil((n_samples / n_rollouts) + self.n_samples_burnin)
+        rollouts_shape = self.rollouts_shape if x_0 is None else (x_0.shape[0], )
+        n_rollouts = math.prod(rollouts_shape)
+        n_samples_per_rollout = math.ceil((n_samples / n_rollouts) + (self.n_samples_burnin if burnin else 0))
 
         # initialize drift and diffusion functions based on arguments
         f = lambda x : self.f(x, param, intv_param)
@@ -148,7 +153,7 @@ class SDE(ABC):
             # sample Wiener process noise
             # [..., d]
             loop_key, loop_subk = random.split(loop_key)
-            xi_t = random.normal(loop_subk, shape=(*self.rollouts_shape, self.n_vars))
+            xi_t = random.normal(loop_subk, shape=(*rollouts_shape, self.n_vars))
 
             # compute next state
             # [..., d]
@@ -181,13 +186,14 @@ class SDE(ABC):
 
         # sample x_init
         # [*rollouts_shape, d]
-        assert isinstance(self.rollouts_shape, tuple), "`rollouts_shape` has to be a tuple. Got {config.rollouts_shape}"
+        assert isinstance(rollouts_shape, tuple), "`rollouts_shape` has to be a tuple. Got {config.rollouts_shape}"
 
         key, subk = random.split(key)
-        if self.x_init is None:
-            x_0 = random.normal(subk, shape=(*self.rollouts_shape, self.n_vars))
-        else:
-            x_0 = random.choice(subk, self.x_init, shape=(*self.rollouts_shape,))
+        if x_0 is None:
+            if self.x_init is None:
+                x_0 = random.normal(subk, shape=(*rollouts_shape, self.n_vars))
+            else:
+                x_0 = random.choice(subk, self.x_init, shape=(*rollouts_shape,))
 
         carry_init = (x_0, key, log_init)
 
@@ -195,13 +201,13 @@ class SDE(ABC):
         # traj: [n_samples_per_rollout, *rollouts_shape, d]
         
         _, thinned_traj = lax.scan(_euler_chunk, carry_init, None, length=n_samples_per_rollout)
-        assert thinned_traj[0].shape == (n_samples_per_rollout, *self.rollouts_shape, self.n_vars)
+        assert thinned_traj[0].shape == (n_samples_per_rollout, *rollouts_shape, self.n_vars)
 
         # discard random key from carry trajectory tuple
         thinned_traj = thinned_traj[0], thinned_traj[2]
 
         # move rollout axes to front, s.t. x trajectory has shape [*rollouts_shape, n_samples_per_rollout, d]
-        thinned_traj = jax.tree_util.tree_map(lambda e: jnp.moveaxis(e, 0, len(self.rollouts_shape)), thinned_traj)
+        thinned_traj = jax.tree_util.tree_map(lambda e: jnp.moveaxis(e, 0, len(rollouts_shape)), thinned_traj)
         return thinned_traj
 
 
@@ -212,6 +218,8 @@ class SDE(ABC):
         *,
         intv_param=None,
         return_traj=False,
+        x_0=None,
+        burnin=True,
     ):
         """
         Samples from the stationary SDE model. The model parameters
@@ -236,10 +244,15 @@ class SDE(ABC):
             self.param,
             intv_param,
             n_samples,
+            x_0=x_0,
+            burnin=burnin,
         )
-
-        # discard burnin
-        samples = traj[..., self.n_samples_burnin:, :]
+        
+        if burnin:
+            # discard burnin
+            samples = traj[..., self.n_samples_burnin:, :]
+        else:
+            samples = traj
 
         # fold random rollouts into the samples axis
         # [n_samples, d]
@@ -264,59 +277,36 @@ class SDE(ABC):
         intv_param=None,
         return_traj=False,
     ):
-        if intv_param == None:
+        if not intv_param:
             return self.sample(key, n_samples, return_traj = return_traj)
         
-        # Extract parameters dictionary
-        params = intv_param._store
-        
-        if not params:
-            raise ValueError("intv_param.parameters is empty")
-    
-        # Get reference type and shape
-        first_key = next(iter(params))
-        ref_value = params[first_key]
-        
-        # Ensure all values have the same type and shape
-        ref_type = type(ref_value)
-        ref_shape = getattr(ref_value, 'shape', None)  # Works for NumPy arrays, tensors
-    
-        for k, value in params.items():
-            if not isinstance(value, ref_type):
-                raise TypeError(f"Parameter '{k}' has type {type(value)}, expected {ref_type}")
-            if getattr(value, 'shape', None) != ref_shape:
-                raise ValueError(f"Parameter '{k}' has shape {getattr(value, 'shape', None)}, expected {ref_shape}")
-        
-        intv_param_envs = [copy.deepcopy(intv_param) for _ in range(ref_shape[0])]
-        
-        samples_list = []
-        if return_traj:
-            traj_list, log_list = [],[]
-            
-        for i, intv_param_ in enumerate(intv_param_envs):
-            # select interventional parameters of the batch
-            # by taking dot-product with environment one-hot indicator vector
+        # Define a helper function for the selection logic
+        def select_intervention(i, intv_param):
+            ref_shape = intv_param.targets.shape
             select = lambda leaf: jnp.einsum("e,e...", jnp.eye(ref_shape[0])[i], leaf)
-            intv_param_ = tree_map(select, intv_param_)
+            intv_param_ = tree_map(select, intv_param)
             intv_param_.targets = tree_map(select, intv_param_.targets)
-            
-            key, subk = random.split(key)
-            samples = self.sample(
-                subk,
-                n_samples=n_samples,
-                intv_param=intv_param_,
-                return_traj=return_traj,
-            )
-            
-            if return_traj:
-                samples, traj, log = samples
-                samples_list.append(jnp.array(samples))
-                traj_list.append(jnp.array(traj) if traj is not None else None)
-                log_list.append(jnp.array(log) if log is not None else None)
-            else:
-                samples_list.append(jnp.array(samples))
-            
-            
+            return intv_param_
+
+        # Create a list for storing the modified intervention parameters
+        intv_param_envs_list = []
+        
+        # Process the intervention parameters as a batch
+        for i in range(intv_param.targets.shape[0]):
+            intv_param_ = select_intervention(i, intv_param)
+            intv_param_envs_list.append(intv_param_)
+
+        # Now call sample for each modified intervention
+        result_envs = []
+        for intv_param_ in intv_param_envs_list:
+            result_env = self.sample(key, n_samples, intv_param=intv_param_, return_traj=return_traj)
+            result_envs.append(result_env)
+
+        # Process outputs
+        if return_traj:
+            samples_list, traj_list, log_list = zip(*result_envs)  # Unpack the tuple
+        else:
+            samples_list = result_envs
             
         samples = jnp.stack(samples_list)
         
@@ -336,3 +326,53 @@ class SDE(ABC):
             return samples, traj, log
         else:
             return samples
+        
+# # Extract parameters dictionary
+# params = intv_param._store
+
+# if not params:
+#     raise ValueError("intv_param.parameters is empty")
+
+# # Get reference type and shape
+# first_key = next(iter(params))
+# ref_value = params[first_key]
+
+# # Ensure all values have the same type and shape
+# ref_type = type(ref_value)
+# ref_shape = getattr(ref_value, 'shape', None)  # Works for NumPy arrays, tensors
+
+# for k, value in params.items():
+#     if not isinstance(value, ref_type):
+#         raise TypeError(f"Parameter '{k}' has type {type(value)}, expected {ref_type}")
+#     if getattr(value, 'shape', None) != ref_shape:
+#         raise ValueError(f"Parameter '{k}' has shape {getattr(value, 'shape', None)}, expected {ref_shape}")
+
+# intv_param_envs = [copy.deepcopy(intv_param) for _ in range(ref_shape[0])]
+
+# samples_list = []
+# if return_traj:
+#     traj_list, log_list = [],[]
+    
+# intv_param_envs_list = []
+    
+# for i, intv_param_ in enumerate(intv_param_envs):
+#     # select interventional parameters of the batch
+#     # by taking dot-product with environment one-hot indicator vector
+#     select = lambda leaf: jnp.einsum("e,e...", jnp.eye(ref_shape[0])[i], leaf)
+#     intv_param_ = tree_map(select, intv_param_)
+#     intv_param_.targets = tree_map(select, intv_param_.targets)
+    
+#     intv_param_envs_list.append(intv_param_)
+
+# intv_param_envs_array = jnp.array(intv_param_envs_list)
+    
+# # Step 1: Define the inner function (_sample) that calls self.sample
+# def _sample(_key, _n_samples, _intv_param, _return_traj, _x_0, _burnin):
+#     return self.sample(_key, _n_samples, intv_param=_intv_param, return_traj=_return_traj, x_0=_x_0, burnin=_burnin)
+
+# # Step 3: Use vmap to batch the intv_param
+# sample_envs = jax.vmap(_sample, in_axes=(None, None, 0, None, None, None), out_axes=0)
+
+# # Step 4: Split the key and apply the batched function
+# key, subk = random.split(key)
+# result_envs = sample_envs(subk, n_samples, intv_param_envs_array, False, None, True)
