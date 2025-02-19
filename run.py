@@ -351,7 +351,7 @@ if __name__ == "__main__":
     # optimization
     debug_config.batch_size = 192
     debug_config.batch_size_env = 1
-    debug_config.bandwidth = 5.0
+    debug_config.bandwidth = 1.0 # 5.0
     debug_config.reg_strength = 0.1
     debug_config.reg_type = "glasso"
     debug_config.grad_clip_val = None
@@ -359,7 +359,7 @@ if __name__ == "__main__":
     
     debug_config.dep_strength = 10
 
-    debug_config.steps = 20000
+    debug_config.steps = 5000
     debug_config.optimizer = "adam"
     debug_config.learning_rate = 0.001
 

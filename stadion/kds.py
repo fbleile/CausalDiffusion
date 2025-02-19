@@ -3,6 +3,7 @@ from functools import partial
 import jax
 from jax import vmap, tree_map
 import jax.numpy as jnp
+from jax import jacfwd
 
 
 def _wrapped_mean(func, axis=None):
@@ -51,6 +52,23 @@ def kds_loss(f, sigma, kernel, estimator="linear"):
 
     def _kernel(x, y, *args):
         return kernel(x, y)
+    
+    # here h is assumed to be matrix-valued
+    def stein_type_kds_operator(h, argnum, hdim):
+        def h_out(x, y, *args):
+            assert x.ndim == y.ndim == 1
+            assert x.shape == y.shape
+            z = x if argnum == 0 else y
+            f_x = f(z, *args)
+            sigma_x = sigma(z, *args)
+            grad_h = jax.jacfwd(h, argnums=argnum)(x, y, *args)
+            if hdim == 0:
+                # I_d = jnp.eye(len(x))
+                # grad_H = grad_h[:, None, None] * I_d[None, :, :]
+                return h(x,y,*args) * f_x + 0.5 * sigma_x.T @ sigma_x @ grad_h # jnp.einsum('ij,jik->k', sigma_x @ sigma_x.T, grad_H)
+            if hdim == 1:
+                return f_x @ h(x,y,*args) + 0.5 * jnp.trace(sigma_x @ sigma_x.T @ grad_h)
+        return h_out
 
     def generator(h, argnum):
         def h_out(x, y, *args):
@@ -63,8 +81,11 @@ def kds_loss(f, sigma, kernel, estimator="linear"):
                    + 0.5 * jnp.trace(sigma_x @ sigma_x.T @ jax.hessian(h, argnum)(x, y, *args))
         return h_out
 
+    # def loss_term(x, y, *args):
+    #     return generator(generator(_kernel, 0), 1)(x, y, *args)
+    
     def loss_term(x, y, *args):
-        return generator(generator(_kernel, 0), 1)(x, y, *args)
+        return stein_type_kds_operator(stein_type_kds_operator(_kernel, 0, 0), 1, 1)(x, y, *args)
 
     if estimator == "v-statistic":
         # run check to make sure kernel is differentiable at x = x'
