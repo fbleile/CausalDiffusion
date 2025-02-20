@@ -1,4 +1,5 @@
 import warnings
+warnings.filterwarnings("ignore")
 warnings.filterwarnings("ignore", message="The value of the smallest subnormal for")
 warnings.filterwarnings("ignore", message="entering retry loop")
 warnings.formatwarning = lambda msg, category, path, lineno, file: f"{path}:{lineno}: {category.__name__}: {msg}\n"

@@ -310,9 +310,7 @@ def make_interventions(key, config):
     return envs
 
 
-def synthetic_sde_data(seed, config):
-
-    key = random.PRNGKey(seed)
+def synthetic_sde_data(key, config):
 
     # sample ground truth parameters
     key, subk = random.split(key)
@@ -320,8 +318,10 @@ def synthetic_sde_data(seed, config):
     key, subk = random.split(key)
     true_theta = make_linear_model_parameters(subk, config, mask)
     
+    key, subk = random.split(key)
     # fit stationary diffusion model
     model = LinearSDE(
+        subk,
         sde_kwargs = {key: value for key, value in config["sde"].items()} if "sde" in config else None
     )
     

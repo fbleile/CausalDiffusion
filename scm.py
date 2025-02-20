@@ -38,9 +38,7 @@ def sample_linear_scm(key, theta, intv_theta, intv_msks, n_samples):
     return x
 
 
-def synthetic_scm_data(seed, config):
-
-    key = random.PRNGKey(seed)
+def synthetic_scm_data(key, config):
 
     # sample ground truth parameters
     key, subk = random.split(key)

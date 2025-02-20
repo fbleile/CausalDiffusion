@@ -12,7 +12,7 @@ def _wrapped_mean(func, axis=None):
     return wrapped
 
 
-def kds_loss(f, sigma, kernel, estimator="linear"):
+def skds_loss(f, sigma, kernel, estimator="linear"):
     """
     KDS loss function for arbitrary SDE functions :math:`f(x, \\dots)`
     and :math:`\\sigma(x, \\dots)`.
@@ -69,23 +69,9 @@ def kds_loss(f, sigma, kernel, estimator="linear"):
             if hdim == 1:
                 return f_x @ h(x,y,*args) + 0.5 * jnp.trace(sigma_x @ sigma_x.T @ grad_h)
         return h_out
-
-    def generator(h, argnum):
-        def h_out(x, y, *args):
-            assert x.ndim == y.ndim == 1
-            assert x.shape == y.shape
-            z = x if argnum == 0 else y
-            f_x = f(z, *args)
-            sigma_x = sigma(z, *args)
-            return f_x @ jax.grad(h, argnum)(x, y, *args) \
-                   + 0.5 * jnp.trace(sigma_x @ sigma_x.T @ jax.hessian(h, argnum)(x, y, *args))
-        return h_out
-
-    def loss_term(x, y, *args):
-        return generator(generator(_kernel, 0), 1)(x, y, *args)
     
-    # def loss_term(x, y, *args):
-    #     return stein_type_kds_operator(stein_type_kds_operator(_kernel, 0, 0), 1, 1)(x, y, *args)
+    def loss_term(x, y, *args):
+        return stein_type_kds_operator(stein_type_kds_operator(_kernel, 0, 0), 1, 1)(x, y, *args)
 
     if estimator == "v-statistic":
         # run check to make sure kernel is differentiable at x = x'

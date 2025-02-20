@@ -15,8 +15,11 @@ import optax
 
 from stadion.sde import SDE
 from stadion.kds import kds_loss
+from stadion.skds import skds_loss
 from stadion.data import make_dataloader
 from stadion.utils import update_ave, retrieve_ave, tree_isnan
+
+jax.config.update("jax_traceback_filtering", "off")
 
 
 def wrapped_mean(func, axis=None):
@@ -167,6 +170,7 @@ class KDSMixin(SDE, ABC):
         targets=None,
         marg_indeps=None,
         bandwidth=5.0,
+        objective_fun="kds",
         estimator="linear",
         learning_rate=0.003,
         steps=10000,
@@ -257,7 +261,12 @@ class KDSMixin(SDE, ABC):
         kernel = partial(rbf_kernel, bandwidth=bandwidth)
 
         # init KDS loss
-        loss_fun = kds_loss(self.f, self.sigma, kernel, estimator=estimator)
+        if objective_fun == "kds":
+            loss_fun = kds_loss(self.f, self.sigma, kernel, estimator=estimator)
+        elif objective_fun == "skds":
+            loss_fun = skds_loss(self.f, self.sigma, kernel, estimator=estimator)
+        else:
+            raise KeyError(f"Unknown objective function `{objective_fun}`")
 
         def objective_fun(param_tup, _, batch_):
             param_, intv_param_ = param_tup
@@ -287,6 +296,7 @@ class KDSMixin(SDE, ABC):
             return l, dict(kds_loss=loss,reg_penalty=reg_penalty,dep_penalty=dep_penalty)
 
         value_and_grad =  jax.value_and_grad(objective_fun, 0, has_aux=True)
+        
 
         # init optimizer and update step
         optimizer = optax.chain(optax.adam(learning_rate))

@@ -6,12 +6,12 @@ from synthetic import synthetic_sde_data
 from scm import synthetic_scm_data
 from utils.sergio import simulate as sergio_sampler
 
-def make_data(*, seed, config):
+def make_data(*, key, config):
 
     meta_data = dict()
 
     if "synth-sde-linear" == config["id"]:
-        (train_tars, train_log), (test_tars, _) = synthetic_sde_data(seed, config=config)
+        (train_tars, train_log), (test_tars, _) = synthetic_sde_data(key, config=config)
         standardizer = make_target_standardizer(train_tars.data[0])
         
         # remember eigenvalue information for analysis
@@ -23,7 +23,7 @@ def make_data(*, seed, config):
             meta_data[f"sde_sim_{k}"] = v
 
     elif "synth-sde-linear-raw" == config["id"]:
-        (train_tars, train_log), (test_tars, _) = synthetic_sde_data(seed, config=config)
+        (train_tars, train_log), (test_tars, _) = synthetic_sde_data(key, config=config)
         standardizer = make_target_standardizer(train_tars.data[0], ignore=True)
 
         # remember eigenvalue information for analysis
@@ -35,15 +35,15 @@ def make_data(*, seed, config):
             meta_data[f"sde_sim_{k}"] = v
 
     elif "synth-scm-linear" == config["id"]:
-        train_tars, test_tars = synthetic_scm_data(seed, config=config)
+        train_tars, test_tars = synthetic_scm_data(key, config=config)
         standardizer = make_target_standardizer(train_tars.data[0])
 
     elif "synth-scm-linear-raw" == config["id"]:
-        train_tars, test_tars = synthetic_scm_data(seed, config=config)
+        train_tars, test_tars = synthetic_scm_data(key, config=config)
         standardizer = make_target_standardizer(train_tars.data[0], ignore=True)
 
     elif "sergio" == config["id"]:
-        train_tars, test_tars = sergio_sampler(seed, config=config)
+        train_tars, test_tars = sergio_sampler(key, config=config)
         standardizer = make_target_standardizer(train_tars.data[0])
 
     else:

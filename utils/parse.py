@@ -279,6 +279,20 @@ def load_data_config(path, abspath=False, warn_not_found=True, warn_if_grid=Fals
     else:
         return config
 
+def expand_config(config):
+    """Recursively expands lists into all possible combinations."""
+    def recursive_expand(d):
+        """Recursively iterate over dictionary values and expand lists."""
+        if isinstance(d, dict):
+            keys, values = zip(*[(k, recursive_expand(v)) for k, v in d.items()])
+            return (dict(zip(keys, v)) for v in itertools.product(*values))
+        elif isinstance(d, list):
+            return d  # Lists in root keys are expanded via product()
+        else:
+            return [d]  # Wrap scalars in lists to be used in product
+    
+    return list(recursive_expand(config))
+
 
 
 def load_methods_config(path, abspath=False, warn_not_found=True, warn_if_grid=False, warn_if_not_grid=False):
@@ -504,3 +518,38 @@ def _ddicts_to_dicts(ddict):
         return onp.array(ddict)
     else:
         return ddict
+    
+
+if __name__ == "__main__":
+    # Example usage with YAML loading
+    yaml_str = """
+    linear:
+        model: "linear" # alternatively "mlp"
+        
+        objective_fun: ["kds", "skds"]
+        estimator: "linear"
+        
+        bandwidth: 1.0 # [1.0, 3.0, 7.0]
+
+        steps: 7000 # [7000, 12000, 20000]
+        
+        batch_size: 192
+        reg_strength: 0.1
+        learning_rate: 0.001
+        metric_batch_size: 1024
+        
+        inductive_bias:
+          - dependency_regularizer: "None"
+            no_neighbors: false
+          - dependency_regularizer: "NOTREKS"
+            dep_strength: 10
+            estimator: "analytic"
+            no_neighbors: true
+    """
+    
+    config = yaml.safe_load(yaml_str)
+    expanded_configs = expand_config(config['linear'])
+    
+    # Print expanded configurations
+    for i, conf in enumerate(expanded_configs, 1):
+        print(f"Config {i}:", conf)

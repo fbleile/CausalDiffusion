@@ -123,7 +123,7 @@ def wasserstein_fun(target_x, target_y, epsilon):
         target_y,
         a=a,
         b=b,
-        epsilon=epsilon,
+        # epsilon=epsilon,
         # symmetric_sinkhorn=False,
     )
     # If it's a tuple, extract the first element
@@ -248,14 +248,15 @@ def make_metric(metr_fun_envs, *args, sampler, n=256):
         # only count intv metric if we had an intervention
         msk = jnp.isclose(tars_batched.intv, 1).any(-1).astype(jnp.float32)
         assert metrics.shape == imetrics.shape == msk.shape == (len(targets.data),)
-
+        
         metrics_mean = metrics.mean(0)
         imetrics_mean = (imetrics * msk).sum() / msk.sum()
 
-        return metrics_mean, imetrics_mean
+        return metrics
 
     def metric_fun(*args):
-        return tuple([out.item() for out in _metric_fun(*args)])  # call .item() for wandb
+        metrics = _metric_fun(*args)
+        return metrics.mean(0).item(), jnp.percentile(metrics, 50, axis=0).item(), metrics
 
     return metric_fun
 

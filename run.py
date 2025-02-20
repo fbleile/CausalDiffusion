@@ -1,157 +1,53 @@
-import os
-import shutil
-import subprocess
-from functools import partial
 import time
 import datetime
 import traceback
-from argparse import Namespace
-
+import copy
+import pandas as pd
 import wandb
+
+from multiprocessing import Pool
+
+from tabulate import tabulate
+
 import jax
-from jax import random, vmap
+from jax import random
 import jax.numpy as jnp
-import numpy as onp
 
-from sklearn.decomposition import PCA
-
-from core import sample_dynamical_system, Data
-from plot import plot, plot_wandb_images
-from data import make_dataset, Batch, sample_batch_jax
 from intervention import search_intv_theta_shift
-from definitions import cpu_count, IS_CLUSTER, CONFIG_DIR
+from definitions import cpu_count, CONFIG_DIR
 
 from sample import make_data
 
-from utils.parse import load_config
+from utils.parse import load_config, expand_config
 from utils.version_control import get_gpu_info, get_gpu_info2
 from utils.metrics import make_mse, make_wasserstein
 
 from stadion.models import LinearSDE
-from stadion.parameters import ModelParameters, InterventionParameters
+from stadion.parameters import InterventionParameters
 
-def run_algo_wandb(wandb_config=None, eval_mode=False):
-    """Function run by wandb.agent()"""
-
-    # job setup
-    t_init = time.time()
-    exception_after_termination = None
-
-    # wandb setup
-    with wandb.init(**wandb_config):
-
-        try:
-            # this config will be set by wandb
-            config = wandb.config
-
-            # summary metrics we are interested in
-            wandb.define_metric("loss", summary="min")
-            wandb.define_metric("loss_fit", summary="min")
-            wandb.define_metric("mse_train", summary="min")
-            wandb.define_metric("mse_test", summary="min")
-            wandb.define_metric("wasser_train", summary="min")
-            wandb.define_metric("wasser_test", summary="min")
-
-            wandb_run_dir = os.path.abspath(os.path.join(wandb.run.dir, os.pardir))
-            print("wandb directory: ", wandb_run_dir, flush=True)
-
-            """++++++++++++++   Data   ++++++++++++++"""
-            jnp.set_printoptions(precision=2, suppress=True, linewidth=200)
-
-            print("\nSimulating data...", flush=True)
-
-            # load or sample data
-            data_config = load_config(CONFIG_DIR / config.data_config, abspath=True)
-            train_targets, test_targets, meta_data = make_data(seed=config.seed, config=data_config)
-
-            print("done.\n", flush=True)
-
-            """++++++++++++++   Run algorithm   ++++++++++++++"""
-
-            _ = run_algo(train_targets, test_targets, config=config, eval_mode=eval_mode, t_init=t_init)
-
-
-        except Exception as e:
-            print("\n\n" + "-" * 30 + "\nwandb sweep exception traceback caught:\n")
-            print(traceback.print_exc(), flush=True)
-            exception_after_termination = e
-
-        print("End of wandb.init context.\n", flush=True)
-
-    # manual sync of offline wandb run -- this is for some reason much faster than the online mode of wandb
-    print("Starting wandb sync ...", flush=True)
-    subprocess.call(f"wandb sync {wandb_run_dir}", shell=True)
-
-    # clean up
-    try:
-        shutil.rmtree(wandb_run_dir)
-        print(f"deleted wandb directory after successful sync: `{wandb_run_dir}`", flush=True)
-    except OSError as e:
-        print("wandb dir not deleted.", flush=True)
-
-    if exception_after_termination is not None:
-        raise exception_after_termination
-
-    print(f"End of run_algo_wandb after total walltime: "
-          f"{str(datetime.timedelta(seconds=round(time.time() - t_init)))}",
-          flush=True)
-
-def run_algo(train_targets, test_targets, config=None, eval_mode=False, t_init=None):
+def run_algo(key, train_targets, test_targets, config=None, t_init=None, log_dict = {}):
 
     jnp.set_printoptions(precision=2, suppress=True, linewidth=200)
-    key = random.PRNGKey(config.seed)
     t_run_algo = time.time()
-
-    device_count = jax.device_count()
-    local_device_count = jax.local_device_count()
-    print(f"jax backend:   {jax.default_backend()} ")
-    print(f"devices:       {device_count}")
-    print(f"local_devices: {local_device_count}")
-    print(f"cpu_count:     {cpu_count}", flush=True)
-    print(f"gpu_info:      {get_gpu_info()}", flush=True)
-    print(f"               {get_gpu_info2()}", flush=True)
-
-    if type(config) == wandb.Config:
-        # wandb case
-        config.update(dict(d=train_targets.data[0].shape[-1]))
-    else:
-        # Namespace case
-        config.d = train_targets.data[0].shape[-1]
-
-    """++++++++++++++   Low-dim visualization   ++++++++++++++"""
-
-    if not eval_mode and config.plot_proj:
-        print("Computing projection transform based on target data...")
-        all_target_data = []
-        for data_env in train_targets.data:
-            all_target_data.append(data_env)
-
-        # # pca
-        all_target_data = onp.concatenate(all_target_data, axis=0)
-        proj = PCA(n_components=2, random_state=config.seed)
-        _ = proj.fit(all_target_data)
-        print("done.", flush=True)
-
-    else:
-        proj = None
-
+    
+    config["d"] = train_targets.data[0].shape[-1]
 
     """++++++++++++++   Model and parameter initialization   ++++++++++++++"""
     # theta
     key, subk = random.split(key)
 
-    if config.model == "linear":
+    if config["model"] == "linear":
         model = LinearSDE(
                 subk,
-                dependency_regularizer="NO TREKS", # "SampleBackprop", # "SampleCrossHSIC", # "Lyapunov",# "both", # 
-                no_neighbors=True,
+                dependency_regularizer=config["inductive_bias"]["dependency_regularizer"], # "SampleBackprop", # "SampleCrossHSIC", # "Lyapunov",# "both", # 
+                no_neighbors=config["inductive_bias"]["no_neighbors"],
                 sde_kwargs = {key: value for key, value in config["sde"].items()} if "sde" in config else None,
             )
-    elif config.model == "mlp":
+    elif config["model"] == "mlp":
         # TODO
         pass
     else:
-        raise KeyError(f"Unknown model `{config.model}`")
+        raise KeyError(f"Unknown model `{config['model']}`")
 
 
     """++++++++++++++   Fit Model with Data   ++++++++++++++"""
@@ -164,52 +60,46 @@ def run_algo(train_targets, test_targets, config=None, eval_mode=False, t_init=N
         train_targets.data,
         targets=train_targets.intv,
         marg_indeps=jnp.array([train_targets.marg_indeps]*n_train_envs),
-        bandwidth=config.bandwidth,
-        estimator="linear",
-        learning_rate=config.learning_rate,
-        steps=config.steps,
-        batch_size=config.batch_size,
-        reg=config.reg_strength,
-        dep=config.dep_strength,
+        bandwidth=config["bandwidth"],
+        objective_fun=config["objective_fun"],
+        estimator=config["estimator"],
+        learning_rate=config["learning_rate"],
+        steps=config["steps"],
+        batch_size=config["batch_size"],
+        reg=config["reg_strength"],
+        dep=config["inductive_bias"]["dep_strength"],
         warm_start_intv=True,
         verbose=10,
     )
     print(f"done.", flush=True)
-
-
     
     """
     ------------------------------------
     Evaluation and logging
     ------------------------------------
     """
+    
+    log_dict['train total time'] = time.time() - t_run_algo
+    
     print("Starting inference...")
     
     sampler = model.sample_envs
 
     # MSE
-    mse_accuracy = make_mse(sampler=sampler, n=config.metric_batch_size)
+    mse_accuracy = make_mse(sampler=sampler, n=config["metric_batch_size"])
 
     # wasserstein distance
     wasser_eps_train = jnp.ones(len(train_targets.data)) * 10.
     wasser_eps_test = jnp.ones(len(test_targets.data)) * 10.
 
-    wasserstein_accuracy_train = make_wasserstein(wasser_eps_train, sampler=sampler, n=config.metric_batch_size)
-    wasserstein_accuracy_test = make_wasserstein(wasser_eps_test, sampler=sampler, n=config.metric_batch_size)
-
-    
-    log_dict = {}
+    wasserstein_accuracy_train = make_wasserstein(wasser_eps_train, sampler=sampler, n=config["metric_batch_size"])
+    wasserstein_accuracy_test = make_wasserstein(wasser_eps_test, sampler=sampler, n=config["metric_batch_size"])
     
     assert test_targets is not None
     
     # assumed information about test targets
     test_target_intv = test_targets.intv
     test_emp_means = test_target_intv * jnp.array([data.mean(-2) for data in test_targets.data])
-    
-    # # init new intv_theta_test with scale 0.0
-    # key, subk = random.split(key)
-    # intv_theta_test_init = init_intv_theta(subk, test_target_intv.shape[0], config.d,
-    #                                         scale_param=config.learn_intv_scale, scale=0.0)
     
     # update estimate of intervention effects in test set
     key, subk = random.split(key)
@@ -219,7 +109,7 @@ def run_algo(train_targets, test_targets, config=None, eval_mode=False, t_init=N
                                                     target_means=test_emp_means,
                                                     target_intv=test_target_intv,
                                                     sampler=sampler,
-                                                    n_samples=config.metric_batch_size)
+                                                    n_samples=config["metric_batch_size"])
     intv_theta_test = InterventionParameters(
             parameters= intv_theta_test,
             targets=test_targets.intv_param.targets
@@ -227,152 +117,283 @@ def run_algo(train_targets, test_targets, config=None, eval_mode=False, t_init=N
         
     # eval metrics
     key, subk = random.split(key)
-    log_dict["mse_train"], _ = \
+    log_dict["avg_mse_train"], log_dict["med_mse_train"], full_mse_train = \
         mse_accuracy(subk, train_targets, model.intv_param)
     
     key, subk = random.split(key)
-    log_dict["wasser_train"], _ = \
+    log_dict["avg_wasser_train"], log_dict["med_wasser_train"], full_wasser_train = \
         wasserstein_accuracy_train(subk, train_targets, model.intv_param)
     
     # to compute metrics, use test data
     key, subk = random.split(key)
-    log_dict["mse_test"], _ = mse_accuracy(subk, test_targets, intv_theta_test)
+    log_dict["avg_mse_test"], log_dict["med_mse_test"], full_mse_test = mse_accuracy(subk, test_targets, intv_theta_test)
     
     # key, subk = random.split(key)
     # log_dict["wasser_test_my"], _= wasserstein_accuracy_test(subk, test_targets, test_targets.intv_param)
     key, subk = random.split(key)
-    log_dict["wasser_test"], _= wasserstein_accuracy_test(subk, test_targets, intv_theta_test)
+    log_dict["avg_wasser_test"], log_dict["med_wasser_test"], full_wasser_test= wasserstein_accuracy_test(subk, test_targets, intv_theta_test)
     
-    """++++++++++++++ Plot ++++++++++++++"""
-    if False:
-        for plot_suffix, plot_tars, plot_intv_param in [("train", train_targets, model.intv_param),
-                                                        ("test", test_targets, test_targets.intv_param)]:
-
-            # simulate rollouts
-            key, subk = random.split(key)
-            samples, trajs_full, _ = sampler(subk, config.metric_batch_size, intv_param=plot_intv_param, return_traj=True)
-
-            assert samples.shape[1] >= config.plot_batch_size, "Error: should sample at least `plot_batch_size` samples "
-            samples, trajs_full_single = samples[:, :config.plot_batch_size, :], trajs_full[:, 0]
-
-            # # plot with batched target
-            # key, subk = random.split(key)
-            # batched_plot_tars = sample_subset(subk, plot_tars, config.plot_batch_size)
-
-            wandb_images = plot(samples, trajs_full_single, plot_tars,
-                                # title_prefix=f"{plot_suffix} t={t} ",
-                                title_prefix=f"{plot_suffix}",
-                                theta=model.param._store,
-                                intv_theta=plot_intv_param._store,
-                                true_param=train_targets.true_param,
-                                ref_data=train_targets.data[0],
-                                cmain="grey",
-                                cfit="blue",
-                                cref="grey",
-                                # plot_mat=False,
-                                # plot_mat=True,
-                                plot_mat=plot_suffix == "train",
-                                # plot_mat=plot_suffix== "train" and t == int(config.steps),
-                                # plot_params=False,
-                                plot_params=plot_suffix== "train" and IS_CLUSTER,
-                                # plot_params=True,
-                                plot_acorr=False,
-                                # proj=None,
-                                proj=proj,
-                                # proj=proj,
-                                # proj=proj if plot_suffix == "train" else None,
-                                # proj=proj if t == config.steps else None,
-                                # proj=proj if t == config.steps and plot_suffix == "train" else None,
-                                # plot_intv_marginals=False,
-                                # plot_intv_marginals=True,
-                                plot_intv_marginals=IS_CLUSTER,
-                                # plot_intv_marginals=not IS_CLUSTER or (plot_suffix == "train"),
-                                # plot_intv_marginals=plot_suffix == "train",
-                                # plot_pairwise_grid=False,
-                                # plot_pairwise_grid=True,
-                                # plot_pairwise_grid=not IS_CLUSTER or (plot_suffix == "train"),
-                                # plot_pairwise_grid=plot_suffix== "train",
-                                # plot_pairwise_grid=plot_suffix== "test",
-                                plot_pairwise_grid=plot_suffix== "train",
-                                # plot_pairwise_grid=plot_suffix== "train" and t == config.steps and config.d <= 5,
-                                grid_type="hist-kde",
-                                # contours=(0.68, 0.95),
-                                # contours_alphas=(0.33, 1.0),
-                                contours=(0.90,),
-                                contours_alphas=(1.0,),
-                                # scotts_bw_scaling=0.75,
-                                scotts_bw_scaling=1.0,
-                                size_per_var=1.0,
-                                plot_max=config.plot_max,
-                                to_wandb=IS_CLUSTER)
-
-            if wandb_images:
-                wandb_images = {f"{k}-{plot_suffix}" if "matrix" not in k else k: v
-                                for k, v in wandb_images.items()}
-                plot_wandb_images(wandb_images)
-
     print(f"End of run_algo after total walltime: "
           f"{str(datetime.timedelta(seconds=round(time.time() - t_run_algo)))}",
           flush=True)
-    
-    print(log_dict)
+
+    table = [
+        ["Avg MSE", f"{log_dict['avg_mse_train']:.3f}", f"{log_dict['avg_mse_test']:.3f}"],
+        ["Med MSE", f"{log_dict['med_mse_train']:.3f}", f"{log_dict['med_mse_test']:.3f}"],
+        ["Avg Wasserstein", f"{log_dict['avg_wasser_train']:.3f}", f"{log_dict['avg_wasser_test']:.3f}"],
+        ["Med Wasserstein", f"{log_dict['med_wasser_train']:.3f}", f"{log_dict['med_wasser_test']:.3f}"]
+    ]
+
+    print(tabulate(table, headers=["Metric", "Train Set", "Test Set"], tablefmt="grid"))
+    print(f"\nTotal Train Time: {log_dict['train total time']:.3f} s")
     
     return log_dict
 
-if __name__ == "__main__":
-    debug_config = Namespace()
+def single_debug_run(test = False):
+    debug_config = {}
 
     # fixed
-    debug_config.seed = 100
+    debug_config["seed"] = 60
 
     # data
     # debug_config.data_config = "/Users/bleile/Master/Thesis Work/CausalDiffusion/config/dev/linear10.yaml"
-    debug_config.data_config = "/Users/bleile/Master/Thesis Work/CausalDiffusion/config/dev/linear20.yaml"
+    debug_config["data_config"] = "/Users/bleile/Master/Thesis Work/CausalDiffusion/config/dev/linear20.yaml"
 
     
     print(debug_config)
     # debug_config.data_config = "dev/sergio.yaml"
 
     # model
-    debug_config.model = "linear" # alternatively "mlp"
-
-    debug_config.sampler_eps = 0.0
-    debug_config.reg_eps = 0.0
-
-    debug_config.init_scale = 0.01
-    debug_config.init_diag = 0.0
-    debug_config.init_intv_at_mean = True
-    debug_config.learn_intv_scale = False
-    debug_config.mlp_hidden = 4
-    debug_config.mlp_activation = "tanh"
-    debug_config.mlp_init = "uniform"
-    debug_config.auto_diff = True
+    debug_config["model"] = "linear" # alternatively "mlp"
+    
+    debug_config["objective_fun"] = "skds"
+    debug_config["estimator"] = "linear"
+    
+    debug_config["inductive_bias"] = {
+            "dependency_regularizer": "None",
+            "dep_strength": 10,
+            "estimator": "analytic",
+            "no_neighbors": False
+        }
 
     # optimization
-    debug_config.batch_size = 192
-    debug_config.batch_size_env = 1
-    debug_config.bandwidth = 1.0 # 5.0
-    debug_config.reg_strength = 0.1
-    debug_config.reg_type = "glasso"
-    debug_config.grad_clip_val = None
-    debug_config.force_linear_diag = True
+    debug_config["batch_size"] = 192
+    debug_config["bandwidth"] = 1.0 # 5.0
+    debug_config["reg_strength"] = 0.1
     
-    debug_config.dep_strength = 10
+    debug_config["dep_strength"] = 10
 
-    debug_config.steps = 5000
-    debug_config.optimizer = "adam"
-    debug_config.learning_rate = 0.001
+    debug_config["steps"] = 7000
+    debug_config["learning_rate"] = 0.001
 
-    debug_config.log_every = 100
-    debug_config.eval_every = 10000
-    debug_config.log_long_every = 10000
-    debug_config.plot_every = 10000
-    debug_config.plot_max = 3
-    debug_config.metric_batch_size = 1024
-    debug_config.plot_batch_size = 384
-    debug_config.plot_proj = False
+    debug_config["metric_batch_size"] = 1024
 
-    debug_config.cluster_t_max = 1000
+    config = debug_config
+    
+    key = random.PRNGKey(config["seed"])
+    
+    t_init = time.time()
 
-    debug_wandb_config = dict(config=debug_config, mode="disabled")
-    run_algo_wandb(wandb_config=debug_wandb_config, eval_mode=False)
+    try:
+        """++++++++++++++   Hardware   ++++++++++++++"""
+        device_count = jax.device_count()
+        local_device_count = jax.local_device_count()
+        print(f"jax backend:   {jax.default_backend()} ")
+        print(f"devices:       {device_count}")
+        print(f"local_devices: {local_device_count}")
+        print(f"cpu_count:     {cpu_count}", flush=True)
+        print(f"gpu_info:      {get_gpu_info()}", flush=True)
+        print(f"               {get_gpu_info2()}", flush=True)
+        
+        """++++++++++++++   Data   ++++++++++++++"""
+        jnp.set_printoptions(precision=2, suppress=True, linewidth=200)
+
+        print("\nSimulating data...", flush=True)
+
+        # load or sample data
+        key, subk = random.split(key)
+        data_config = load_config(CONFIG_DIR / config["data_config"], abspath=True)
+        train_targets, test_targets, meta_data = make_data(key=subk, config=data_config)
+
+        print("done.\n", flush=True)
+
+        """++++++++++++++   Run algorithm   ++++++++++++++"""
+        key, subk = random.split(key)
+        _ = run_algo(subk, train_targets, test_targets, config=config, t_init=t_init)
+
+    except Exception:
+        print(traceback.print_exc(), flush=True)
+        
+def hyperparam_tuning(seed, data_config_str = None, model_config_str = None):
+    
+    model_master_config = load_config(model_config_str, abspath=True)
+    model_master_expanded_configs = sum((expand_config(model_master_config[key]) for key in model_master_config), [])
+
+    key = random.PRNGKey(seed)
+    
+    t_init = time.time()
+
+    try:
+        """++++++++++++++   Hardware   ++++++++++++++"""
+        device_count = jax.device_count()
+        local_device_count = jax.local_device_count()
+        print(f"jax backend:   {jax.default_backend()} ")
+        print(f"devices:       {device_count}")
+        print(f"local_devices: {local_device_count}")
+        print(f"cpu_count:     {cpu_count}", flush=True)
+        print(f"gpu_info:      {get_gpu_info()}", flush=True)
+        print(f"               {get_gpu_info2()}", flush=True)
+        
+        """++++++++++++++   Data   ++++++++++++++"""
+        jnp.set_printoptions(precision=2, suppress=True, linewidth=200)
+
+        print("\nSimulating data...", flush=True)
+
+        # load or sample data
+        data_config = load_config(data_config_str, abspath=True)
+        
+        datasets = {}
+        
+        logger = {}
+        logger["id"] = data_config["id"]
+        logger["n_vars"] = data_config["n_vars"]
+        logger["sparsity"] = data_config["sparsity"]
+        logger["marg_indeps"] = data_config["marg_indeps"]
+        
+        for i in range(data_config["n_datasets"]):
+            key, subk = random.split(key)
+            train_targets, test_targets, meta_data = make_data(key=subk, config=data_config)
+            datasets[i] = {}
+            datasets[i]["train_targets"] = train_targets
+            datasets[i]["test_targets"] = test_targets
+            datasets[i]["meta_data"] = meta_data
+
+        print("done.\n", flush=True)
+
+        """++++++++++++++   Run algorithm   ++++++++++++++"""
+        logs = []
+        for i, config in enumerate(model_master_expanded_configs):
+            model_log = {}
+            model_log["model"] = config["model"]
+            model_log["objective_fun"] = config["objective_fun"]
+            model_log["bandwidth"] = config["bandwidth"]
+            model_log["steps"] = config["steps"]
+            model_log["model"] = config["model"]
+            model_log["inductive_bias"] = config["inductive_bias"]["dependency_regularizer"]
+            for j, value in datasets.items():
+                train_targets, test_targets, _ = datasets[j].values()
+                model_log_copy = copy.deepcopy(model_log)
+                
+                key, subk = random.split(key)
+                data_log = run_algo(subk, train_targets, test_targets, config=config, t_init=t_init)
+                model_log_copy.update(data_log)
+                
+                logs.append(model_log_copy)
+       
+        # Convert list of dictionaries to a DataFrame
+        df = pd.DataFrame(logs)
+        
+        # Write to a CSV file
+        df.to_csv('output.csv', index=False)  # index=False avoids writing row indices
+    
+    except Exception:
+        print(traceback.print_exc(), flush=True)
+
+
+# This is now a top-level function that can be serialized properly
+def run_single_config(config_and_key):
+    # Unpack the config and PRNG key
+    config, key, dataset = config_and_key
+    model_log = {
+        "model": config["model"],
+        "objective_fun": config["objective_fun"],
+        "bandwidth": config["bandwidth"],
+        "steps": config["steps"],
+        "inductive_bias": config["inductive_bias"]["dependency_regularizer"]
+    }
+
+    train_targets, test_targets, _ = dataset.values()
+    model_log_copy = copy.deepcopy(model_log)
+
+    # Split key for each configuration
+    key, subk = random.split(key)  # Generate new key for each run
+    data_log = run_algo(subk, train_targets, test_targets, config=config, t_init=time.time())
+    model_log_copy.update(data_log)
+
+    return model_log_copy
+
+# This is the main function that initializes everything and runs the parallelized hyperparameter tuning
+def hyperparam_tuning_wandb(seed, data_config_str=None, model_config_str=None):
+    model_master_config = load_config(model_config_str, abspath=True)
+    model_master_expanded_configs = sum((expand_config(model_master_config[key]) for key in model_master_config), [])
+
+    # Initialize PRNG key
+    key = random.PRNGKey(seed)
+    t_init = time.time()
+
+    try:
+        # Initialize Weights & Biases
+        wandb.init(project="your_project_name", config={"seed": seed, "data_config": data_config_str, "model_config": model_config_str})
+
+        """++++++++++++++   Hardware ++++++++++++++"""
+        device_count = jax.device_count()
+        local_device_count = jax.local_device_count()
+        print(f"jax backend:   {jax.default_backend()}")
+        print(f"devices:       {device_count}")
+        print(f"local_devices: {local_device_count}")
+        
+        """++++++++++++++   Data ++++++++++++++"""
+        print("\nSimulating data...", flush=True)
+        data_config = load_config(data_config_str, abspath=True)
+
+        datasets = {}
+        logger = {
+            "id": data_config["id"],
+            "n_vars": data_config["n_vars"],
+            "sparsity": data_config["sparsity"],
+            "marg_indeps": data_config["marg_indeps"]
+        }
+
+        for i in range(data_config["n_datasets"]):
+            key, subk = random.split(key)
+            train_targets, test_targets, meta_data = make_data(key=subk, config=data_config)
+            datasets[i] = {"train_targets": train_targets, "test_targets": test_targets, "meta_data": meta_data}
+
+        print("done.\n", flush=True)
+
+        """++++++++++++++   Run algorithm ++++++++++++++"""
+        logs = []
+
+        # Prepare the data to pass to the Pool
+        config_and_key_and_dataset_list = [
+            (config, key, datasets[i]) for i in datasets for config in model_master_expanded_configs
+        ]
+        # Parallelize the runs
+        with Pool(len(config_and_key_and_dataset_list)) as p:
+            logs = p.map(run_single_config, config_and_key_and_dataset_list)
+        
+        
+        logs_with_config = [
+            {**log, **config} for log, config in zip(logs, [config for config in model_master_expanded_configs for _ in datasets])
+        ]
+        
+        # Log to W&B
+        for log in logs_with_config:
+            wandb.log(log)
+
+        # After all runs, you can save logs to CSV
+        df = pd.DataFrame(logs)
+        df.to_csv('output.csv', index=False)  # index=False avoids writing row indices
+
+    except Exception:
+        print(traceback.print_exc(), flush=True)
+    finally:
+        wandb.finish()
+
+if __name__ == "__main__":
+    
+    data_config_str = "/Users/bleile/Master/Thesis Work/CausalDiffusion/config/dev/linear20.yaml"
+    model_master_config_str = "/Users/bleile/Master/Thesis Work/CausalDiffusion/config/dev/models.yaml"
+    
+    hyperparam_tuning_wandb(100, data_config_str, model_master_config_str)
+    # single_debug_run(test = False)
