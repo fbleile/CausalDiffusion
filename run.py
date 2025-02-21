@@ -5,7 +5,7 @@ import copy
 import pandas as pd
 import wandb
 
-from multiprocessing import Pool
+from multiprocessing import Pool, get_context
 
 from tabulate import tabulate
 
@@ -25,7 +25,7 @@ from utils.metrics import make_mse, make_wasserstein
 from stadion.models import LinearSDE
 from stadion.parameters import InterventionParameters
 
-def run_algo(key, train_targets, test_targets, config=None, t_init=None, log_dict = {}):
+def wandb_run_algo(key, train_targets, test_targets, config=None, t_init=None, log_dict = {}):
 
     jnp.set_printoptions(precision=2, suppress=True, linewidth=200)
     t_run_algo = time.time()
@@ -54,6 +54,7 @@ def run_algo(key, train_targets, test_targets, config=None, t_init=None, log_dic
     n_train_envs = len(train_targets.data)
 
     print(f"Fitting Model", flush=True)
+    print(f"{config}")
     key, subk = random.split(key)
     model.fit(
         subk,
@@ -117,21 +118,21 @@ def run_algo(key, train_targets, test_targets, config=None, t_init=None, log_dic
         
     # eval metrics
     key, subk = random.split(key)
-    log_dict["avg_mse_train"], log_dict["med_mse_train"], full_mse_train = \
+    log_dict["avg_mse_train"], log_dict["med_mse_train"], log_dict["full_mse_train"] = \
         mse_accuracy(subk, train_targets, model.intv_param)
     
     key, subk = random.split(key)
-    log_dict["avg_wasser_train"], log_dict["med_wasser_train"], full_wasser_train = \
+    log_dict["avg_wasser_train"], log_dict["med_wasser_train"], log_dict["full_wasser_train"] = \
         wasserstein_accuracy_train(subk, train_targets, model.intv_param)
     
     # to compute metrics, use test data
     key, subk = random.split(key)
-    log_dict["avg_mse_test"], log_dict["med_mse_test"], full_mse_test = mse_accuracy(subk, test_targets, intv_theta_test)
+    log_dict["avg_mse_test"], log_dict["med_mse_test"], log_dict["full_mse_test"] = mse_accuracy(subk, test_targets, intv_theta_test)
     
     # key, subk = random.split(key)
     # log_dict["wasser_test_my"], _= wasserstein_accuracy_test(subk, test_targets, test_targets.intv_param)
     key, subk = random.split(key)
-    log_dict["avg_wasser_test"], log_dict["med_wasser_test"], full_wasser_test= wasserstein_accuracy_test(subk, test_targets, intv_theta_test)
+    log_dict["avg_wasser_test"], log_dict["med_wasser_test"], log_dict["full_wasser_test"]= wasserstein_accuracy_test(subk, test_targets, intv_theta_test)
     
     print(f"End of run_algo after total walltime: "
           f"{str(datetime.timedelta(seconds=round(time.time() - t_run_algo)))}",
@@ -150,6 +151,7 @@ def run_algo(key, train_targets, test_targets, config=None, t_init=None, log_dic
     return log_dict
 
 def single_debug_run(test = False):
+    print("single_debug_run")
     debug_config = {}
 
     # fixed
@@ -219,7 +221,7 @@ def single_debug_run(test = False):
 
         """++++++++++++++   Run algorithm   ++++++++++++++"""
         key, subk = random.split(key)
-        _ = run_algo(subk, train_targets, test_targets, config=config, t_init=t_init)
+        _ = wandb_run_algo(subk, train_targets, test_targets, config=config, t_init=t_init)
 
     except Exception:
         print(traceback.print_exc(), flush=True)
@@ -285,7 +287,7 @@ def hyperparam_tuning(seed, data_config_str = None, model_config_str = None):
                 model_log_copy = copy.deepcopy(model_log)
                 
                 key, subk = random.split(key)
-                data_log = run_algo(subk, train_targets, test_targets, config=config, t_init=t_init)
+                data_log = wandb_run_algo(subk, train_targets, test_targets, config=config, t_init=t_init)
                 model_log_copy.update(data_log)
                 
                 logs.append(model_log_copy)
@@ -317,7 +319,7 @@ def run_single_config(config_and_key):
 
     # Split key for each configuration
     key, subk = random.split(key)  # Generate new key for each run
-    data_log = run_algo(subk, train_targets, test_targets, config=config, t_init=time.time())
+    data_log = wandb_run_algo(subk, train_targets, test_targets, config=config, t_init=time.time())
     model_log_copy.update(data_log)
 
     return model_log_copy
@@ -329,11 +331,11 @@ def hyperparam_tuning_wandb(seed, data_config_str=None, model_config_str=None):
 
     # Initialize PRNG key
     key = random.PRNGKey(seed)
-    t_init = time.time()
 
     try:
         # Initialize Weights & Biases
         wandb.init(project="your_project_name", config={"seed": seed, "data_config": data_config_str, "model_config": model_config_str})
+        # wandb.init(sync_tensorboard=False, reinit=True)
 
         """++++++++++++++   Hardware ++++++++++++++"""
         device_count = jax.device_count()
@@ -363,27 +365,31 @@ def hyperparam_tuning_wandb(seed, data_config_str=None, model_config_str=None):
 
         """++++++++++++++   Run algorithm ++++++++++++++"""
         logs = []
-
+        
         # Prepare the data to pass to the Pool
         config_and_key_and_dataset_list = [
             (config, key, datasets[i]) for i in datasets for config in model_master_expanded_configs
         ]
-        # Parallelize the runs
-        with Pool(len(config_and_key_and_dataset_list)) as p:
-            logs = p.map(run_single_config, config_and_key_and_dataset_list)
         
+        # # Parallelize the runs with controlled parallelism
+        # with get_context("spawn").Pool(processes=NUM_PROCESSES, maxtasksperchild=1) as p:
+        #     logs = p.map(run_single_config, config_and_key_and_dataset_list)
         
-        logs_with_config = [
-            {**log, **config} for log, config in zip(logs, [config for config in model_master_expanded_configs for _ in datasets])
-        ]
-        
-        # Log to W&B
-        for log in logs_with_config:
-            wandb.log(log)
+        with get_context("spawn").Pool(processes=1, maxtasksperchild=1) as p:
+            for config in config_and_key_and_dataset_list:
+                log = p.apply(run_single_config, args=(config,))
+                logs.append(log)
 
-        # After all runs, you can save logs to CSV
-        df = pd.DataFrame(logs)
-        df.to_csv('output.csv', index=False)  # index=False avoids writing row indices
+        
+        # Add seed and W&B execution name to the beginning of each log
+        logs_with_config = [
+            {"seed": seed, "wandb_name": wandb.run.name, **log, **config}
+            for log, config in zip(logs, [config for config in model_master_expanded_configs for _ in datasets])
+        ]
+
+        # After all runs, save logs to CSV (append mode)
+        df = pd.DataFrame(logs_with_config)
+        df.to_csv('output.csv', mode='a', header=not pd.io.common.file_exists('output.csv'), index=False)
 
     except Exception:
         print(traceback.print_exc(), flush=True)

@@ -268,7 +268,7 @@ class KDSMixin(SDE, ABC):
         else:
             raise KeyError(f"Unknown objective function `{objective_fun}`")
 
-        def objective_fun(param_tup, _, batch_):
+        def _objective_fun(param_tup, _, batch_):
             param_, intv_param_ = param_tup
 
             # select interventional parameters of the batch
@@ -295,7 +295,7 @@ class KDSMixin(SDE, ABC):
             l = loss + reg_penalty + dep_penalty
             return l, dict(kds_loss=loss,reg_penalty=reg_penalty,dep_penalty=dep_penalty)
 
-        value_and_grad =  jax.value_and_grad(objective_fun, 0, has_aux=True)
+        value_and_grad =  jax.value_and_grad(_objective_fun, 0, has_aux=True)
         
 
         # init optimizer and update step
@@ -369,7 +369,7 @@ class KDSMixin(SDE, ABC):
                 logs = defaultdict(float)
                 dep_ratio = self.get_dep_ratio(key, param)
                 print_str = f"step: {t: >5d} " \
-                            f"kds: {ave_logs['kds_loss']: >12.6f}  | " \
+                            f"{objective_fun}: {ave_logs['kds_loss']: >12.6f}  | " \
                             f"reg: {ave_logs['reg_penalty']: >12.6f}  | " \
                             f"dep: {ave_logs['dep_penalty']: >12.6f}  | " \
                             f"min remain: {(steps - t) * t_elapsed / log_every / 60.0: >4.1f}  |" \
