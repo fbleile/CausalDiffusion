@@ -230,6 +230,10 @@ def hyperparam_tuning(seed, data_config_str = None, model_config_str = None):
     
     model_master_config = load_config(model_config_str, abspath=True)
     model_master_expanded_configs = sum((expand_config(model_master_config[key]) for key in model_master_config), [])
+    
+    # Print expanded configurations
+    for i, conf in enumerate(model_master_expanded_configs, 1):
+        print(f"Config {i}:", conf)
 
     key = random.PRNGKey(seed)
     
@@ -376,9 +380,10 @@ def hyperparam_tuning_wandb(seed, data_config_str=None, model_config_str=None):
         #     logs = p.map(run_single_config, config_and_key_and_dataset_list)
         
         with get_context("spawn").Pool(processes=1, maxtasksperchild=1) as p:
-            for config in config_and_key_and_dataset_list:
+            for i, config in enumerate(config_and_key_and_dataset_list, 1):
                 log = p.apply(run_single_config, args=(config,))
                 logs.append(log)
+                print(f'Finished {i} / {len(config_and_key_and_dataset_list)}')
 
         
         # Add seed and W&B execution name to the beginning of each log
@@ -398,8 +403,8 @@ def hyperparam_tuning_wandb(seed, data_config_str=None, model_config_str=None):
 
 if __name__ == "__main__":
     
-    data_config_str = "/Users/bleile/Master/Thesis Work/CausalDiffusion/config/dev/linear20.yaml"
+    data_config_str = "/Users/bleile/Master/Thesis Work/CausalDiffusion/config/dev/linear20_SDE.yaml"
     model_master_config_str = "/Users/bleile/Master/Thesis Work/CausalDiffusion/config/dev/models.yaml"
     
-    hyperparam_tuning_wandb(100, data_config_str, model_master_config_str)
+    hyperparam_tuning_wandb(105, data_config_str, model_master_config_str)
     # single_debug_run(test = False)

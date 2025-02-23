@@ -523,32 +523,24 @@ def _ddicts_to_dicts(ddict):
 if __name__ == "__main__":
     # Example usage with YAML loading
     yaml_str = """
-    linear:
+    setup1:
         model: "linear" # alternatively "mlp"
         
-        objective_fun: ["kds", "skds"]
+        objective_fun: "kds"
         estimator: "linear"
         
-        bandwidth: 1.0 # [1.0, 3.0, 7.0]
-
-        steps: 7000 # [7000, 12000, 20000]
+        bandwidth: [1.0, 3.0, 7.0]
+    setup2:
+        model: "linear" # alternatively "mlp"
         
-        batch_size: 192
-        reg_strength: 0.1
-        learning_rate: 0.001
-        metric_batch_size: 1024
+        objective_fun: "skds"
+        estimator: "linear"
         
-        inductive_bias:
-          - dependency_regularizer: "None"
-            no_neighbors: false
-          - dependency_regularizer: "NOTREKS"
-            dep_strength: 10
-            estimator: "analytic"
-            no_neighbors: true
+        bandwidth: [1.0, 3.0, 7.0]
     """
     
     config = yaml.safe_load(yaml_str)
-    expanded_configs = expand_config(config['linear'])
+    expanded_configs = expanded_configs = sum((expand_config(config[key]) for key in config), [])
     
     # Print expanded configurations
     for i, conf in enumerate(expanded_configs, 1):

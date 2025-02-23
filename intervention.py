@@ -107,12 +107,13 @@ def search_intv_theta_shift(key, *, theta, intv_param, target_means, target_intv
             onp.real(onp.linalg.eigvals(theta["w1"])).max() >= 0.0
         )
         if not is_observ_stable.all() or eigv_check:
-            key, subk = random.split(key)
-            example_samples = sampler(subk, theta, intv_theta_observ, onp.zeros_like(target_intv).astype(onp.int32))
-            warnings.warn("\nSystem not observationally stable.\n"
-                          f"nans: {onp.isnan(example_samples).any(-1).sum(-1)} of {n_samples} samples\n"
-                          f"infs: {(onp.abs(example_samples) > INFINITY).any(-1).sum(-1)} of {n_samples} samples\n"
-                          "Skipping search_theta_shift")
+            # key, subk = random.split(key)
+            # example_samples = sampler(subk, theta, intv_theta_observ, onp.zeros_like(target_intv).astype(onp.int32))
+            # warnings.warn("\nSystem not observationally stable.\n"
+            #               f"nans: {onp.isnan(example_samples).any(-1).sum(-1)} of {n_samples} samples\n"
+            #               f"infs: {(onp.abs(example_samples) > INFINITY).any(-1).sum(-1)} of {n_samples} samples\n"
+            #               "Skipping search_theta_shift")
+            print("System not observationally stable.")
             intv_theta_nan = tree_map(lambda arr: arr * jnp.nan, intv_theta_shape_copy)
             return intv_theta_nan, log_dict
 
