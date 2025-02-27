@@ -4,6 +4,9 @@ import traceback
 import copy
 import pandas as pd
 import wandb
+import os
+
+import torch
 
 from multiprocessing import Pool, get_context
 
@@ -21,6 +24,7 @@ from sample import make_data
 from utils.parse import load_config, expand_config
 from utils.version_control import get_gpu_info, get_gpu_info2
 from utils.metrics import make_mse, make_wasserstein
+from utils.NN_dim_bandwidth import NeuralNetwork
 
 from stadion.models import LinearSDE
 from stadion.parameters import InterventionParameters
@@ -29,8 +33,6 @@ def wandb_run_algo(key, train_targets, test_targets, config=None, t_init=None, l
 
     jnp.set_printoptions(precision=2, suppress=True, linewidth=200)
     t_run_algo = time.time()
-    
-    config["d"] = train_targets.data[0].shape[-1]
 
     """++++++++++++++   Model and parameter initialization   ++++++++++++++"""
     # theta
@@ -48,7 +50,6 @@ def wandb_run_algo(key, train_targets, test_targets, config=None, t_init=None, l
         pass
     else:
         raise KeyError(f"Unknown model `{config['model']}`")
-
 
     """++++++++++++++   Fit Model with Data   ++++++++++++++"""
     n_train_envs = len(train_targets.data)
@@ -71,6 +72,7 @@ def wandb_run_algo(key, train_targets, test_targets, config=None, t_init=None, l
         dep=config["inductive_bias"]["dep_strength"],
         warm_start_intv=True,
         verbose=10,
+        k_reg=config["kernel_reg"]
     )
     print(f"done.", flush=True)
     
@@ -221,7 +223,7 @@ def single_debug_run(test = False):
 
         """++++++++++++++   Run algorithm   ++++++++++++++"""
         key, subk = random.split(key)
-        _ = wandb_run_algo(subk, train_targets, test_targets, config=config, t_init=t_init)
+        _ = wandb_run_algo(subk, train_targets, test_targets, config=config, t_init=t_init, log_dict=config)
 
     except Exception:
         print(traceback.print_exc(), flush=True)
@@ -285,7 +287,7 @@ def hyperparam_tuning(seed, data_config_str = None, model_config_str = None):
             model_log["bandwidth"] = config["bandwidth"]
             model_log["steps"] = config["steps"]
             model_log["model"] = config["model"]
-            model_log["inductive_bias"] = config["inductive_bias"]["dependency_regularizer"]
+            model_log["inductive_bias"] = config["inductive_bias"]
             for j, value in datasets.items():
                 train_targets, test_targets, _ = datasets[j].values()
                 model_log_copy = copy.deepcopy(model_log)
@@ -309,16 +311,28 @@ def hyperparam_tuning(seed, data_config_str = None, model_config_str = None):
 # This is now a top-level function that can be serialized properly
 def run_single_config(config_and_key):
     # Unpack the config and PRNG key
-    config, key, dataset = config_and_key
+    config, key, dataset, model_dim_bandwidth = config_and_key
+    
+    train_targets, test_targets, _ = dataset.values()
+    config["d"] = train_targets.data[0].shape[-1]
+
+    # Prepare input for the model
+    input_data = torch.tensor([[config["d"], config["bandwidth"]]], dtype=torch.float32)
+    
+    # Make the prediction
+    with torch.no_grad():
+        avg_kernel = model_dim_bandwidth(input_data).item()
+        config["kernel_reg"] = (avg_kernel)**(-1)
+
+    
     model_log = {
         "model": config["model"],
         "objective_fun": config["objective_fun"],
         "bandwidth": config["bandwidth"],
         "steps": config["steps"],
-        "inductive_bias": config["inductive_bias"]["dependency_regularizer"]
+        "inductive_bias": config["inductive_bias"]
     }
 
-    train_targets, test_targets, _ = dataset.values()
     model_log_copy = copy.deepcopy(model_log)
 
     # Split key for each configuration
@@ -348,12 +362,20 @@ def hyperparam_tuning_wandb(seed, data_config_str=None, model_config_str=None):
         print(f"devices:       {device_count}")
         print(f"local_devices: {local_device_count}")
         
+        """++++++++++++++ Load kernel regularizer Neural Network ++++++++++++++"""
+        # Define relative path from the current working directory
+        # relative_path = os.path.join(os.path.dirname(__file__), 'utils', 'dim_bandwidth_model.pth')
+        
+        # Load the model
+        model_dim_bandwidth = torch.load('/Users/bleile/Master/Thesis Work/CausalDiffusion/utils/dim_bandwidth_model.pth', weights_only=False)
+        model_dim_bandwidth.eval()
+        
         """++++++++++++++   Data ++++++++++++++"""
         print("\nSimulating data...", flush=True)
         data_config = load_config(data_config_str, abspath=True)
 
         datasets = {}
-        logger = {
+        data_model_log = {
             "id": data_config["id"],
             "n_vars": data_config["n_vars"],
             "sparsity": data_config["sparsity"],
@@ -372,7 +394,7 @@ def hyperparam_tuning_wandb(seed, data_config_str=None, model_config_str=None):
         
         # Prepare the data to pass to the Pool
         config_and_key_and_dataset_list = [
-            (config, key, datasets[i]) for i in datasets for config in model_master_expanded_configs
+            (config, key, datasets[i], model_dim_bandwidth) for i in datasets for config in model_master_expanded_configs
         ]
         
         # # Parallelize the runs with controlled parallelism
@@ -385,26 +407,23 @@ def hyperparam_tuning_wandb(seed, data_config_str=None, model_config_str=None):
                 logs.append(log)
                 print(f'Finished {i} / {len(config_and_key_and_dataset_list)}')
 
-        
         # Add seed and W&B execution name to the beginning of each log
         logs_with_config = [
-            {"seed": seed, "wandb_name": wandb.run.name, **log, **config}
-            for log, config in zip(logs, [config for config in model_master_expanded_configs for _ in datasets])
+            {"seed": seed, "wandb_name": wandb.run.name, **log, **data_model_log} for log in logs
         ]
-
-        # After all runs, save logs to CSV (append mode)
-        df = pd.DataFrame(logs_with_config)
-        df.to_csv('output.csv', mode='a', header=not pd.io.common.file_exists('output.csv'), index=False)
-
     except Exception:
         print(traceback.print_exc(), flush=True)
     finally:
         wandb.finish()
+    return logs_with_config
 
 if __name__ == "__main__":
     
-    data_config_str = "/Users/bleile/Master/Thesis Work/CausalDiffusion/config/dev/linear20_SDE.yaml"
+    data_config_str = "/Users/bleile/Master/Thesis Work/CausalDiffusion/config/dev/linear20_SCM.yaml"
     model_master_config_str = "/Users/bleile/Master/Thesis Work/CausalDiffusion/config/dev/models.yaml"
     
-    hyperparam_tuning_wandb(105, data_config_str, model_master_config_str)
-    # single_debug_run(test = False)
+    logs = hyperparam_tuning_wandb(113, data_config_str, model_master_config_str)
+    
+    df = pd.DataFrame(logs)
+    df.replace({r'\n': ' ', r'\r': ' '}, regex=True, inplace=True)
+    df.to_csv('output.csv', mode='a', header=not pd.io.common.file_exists('output.csv'), index=False)

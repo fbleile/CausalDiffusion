@@ -284,14 +284,15 @@ def expand_config(config):
     def recursive_expand(d):
         """Recursively iterate over dictionary values and expand lists."""
         if isinstance(d, dict):
-            keys, values = zip(*[(k, recursive_expand(v)) for k, v in d.items()])
-            return (dict(zip(keys, v)) for v in itertools.product(*values))
+            expanded_items = {k: recursive_expand(v) for k, v in d.items()}
+            keys, values = zip(*expanded_items.items())
+            return [dict(zip(keys, v)) for v in itertools.product(*values)]
         elif isinstance(d, list):
-            return d  # Lists in root keys are expanded via product()
+            return list(itertools.chain.from_iterable(recursive_expand(x) if isinstance(x, dict) else [x] for x in d))
         else:
             return [d]  # Wrap scalars in lists to be used in product
     
-    return list(recursive_expand(config))
+    return recursive_expand(config)
 
 
 
@@ -523,20 +524,47 @@ def _ddicts_to_dicts(ddict):
 if __name__ == "__main__":
     # Example usage with YAML loading
     yaml_str = """
-    setup1:
-        model: "linear" # alternatively "mlp"
-        
-        objective_fun: "kds"
-        estimator: "linear"
-        
-        bandwidth: [1.0, 3.0, 7.0]
-    setup2:
+    skds_model:
         model: "linear" # alternatively "mlp"
         
         objective_fun: "skds"
         estimator: "linear"
         
-        bandwidth: [1.0, 3.0, 7.0]
+        bandwidth: 0.5
+
+        steps: 15000
+        
+        batch_size: 192
+        reg_strength: 0.1
+        learning_rate: 0.001
+        metric_batch_size: 1024
+        
+        inductive_bias:
+          - dependency_regularizer: "NO TREKS"
+            dep_strength: [0.01, 1., 100.]
+            estimator: "analytic"
+            no_neighbors: [true, false]
+
+    kds_model:
+        model: "linear" # alternatively "mlp"
+        
+        objective_fun: "kds"
+        estimator: "linear"
+        
+        bandwidth: 0.5
+
+        steps: 10000
+        
+        batch_size: 192
+        reg_strength: 0.1
+        learning_rate: 0.001
+        metric_batch_size: 1024
+        
+        inductive_bias:
+          - dependency_regularizer: "NO TREKS"
+            dep_strength: [0.01, 1., 100.]
+            estimator: "analytic"
+            no_neighbors: [true, false]
     """
     
     config = yaml.safe_load(yaml_str)

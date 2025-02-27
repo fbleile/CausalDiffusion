@@ -49,6 +49,24 @@ def squared_norm(x, y):
         k = k.squeeze(-1)
     return k
 
+def w_1(x):
+    return jnp.sqrt(1 + jnp.sum(x ** 2, axis=-1))
+
+def w_2(x):
+    return 1 + jnp.sum(x ** 2, axis=-1)
+
+def diff_rbf_rbf_kernel(x, y, *, bandwidth):
+    assert type(bandwidth) == float or bandwidth.ndim == 0
+
+    # Compute the RBF kernel term
+    rbf_kernel_term = jnp.exp(- squared_norm(x, y) / (2.0 * (bandwidth ** 2)))
+
+    # Compute the weight terms w_1(x) and w_1(y)
+    w_x = w_1(x)
+    w_y = w_1(y)
+
+    # Return the modified kernel, divided by w_1(x) * w_1(y)
+    return rbf_kernel_term / (w_x * w_y)
 
 def rbf_kernel(x, y, *, bandwidth):
     assert type(bandwidth) == float or bandwidth.ndim == 0
@@ -179,6 +197,7 @@ class KDSMixin(SDE, ABC):
         dep=0.001,
         warm_start_intv=True,
         verbose=10,
+        k_reg=0.2,
     ):
         """
         Args:
@@ -257,13 +276,16 @@ class KDSMixin(SDE, ABC):
         key, subk = random.split(key)
         train_loader = make_dataloader(seed=subk[0].item(), sharding=sharding, x=x, batch_size=batch_size)
 
-        # init kernel
-        kernel = partial(rbf_kernel, bandwidth=bandwidth)
+        
 
         # init KDS loss
         if objective_fun == "kds":
+            # init kernel
+            kernel = partial(rbf_kernel, bandwidth=bandwidth)
             loss_fun = kds_loss(self.f, self.sigma, kernel, estimator=estimator)
         elif objective_fun == "skds":
+            # init kernel
+            kernel = partial(diff_rbf_rbf_kernel, bandwidth=bandwidth)
             loss_fun = skds_loss(self.f, self.sigma, kernel, estimator=estimator)
         else:
             raise KeyError(f"Unknown objective function `{objective_fun}`")
@@ -281,7 +303,7 @@ class KDSMixin(SDE, ABC):
             # print(f'marg_indeps selected: {marg_indeps_}')
 
             # compute mean KDS loss over environments
-            loss = loss_fun(batch_.x, param_, intv_param_)
+            loss = k_reg * loss_fun(batch_.x, param_, intv_param_)
             assert loss.ndim == 0
 
             # compute any regularizers
