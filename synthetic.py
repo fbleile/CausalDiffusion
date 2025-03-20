@@ -14,6 +14,11 @@ from stadion.models import LinearSDE
 from stadion.parameters import ModelParameters, InterventionParameters
 from stadion.utils import tree_init_normal
 
+import matplotlib.pyplot as plt
+import networkx as nx
+import jax.scipy.linalg
+
+
 def sparse(key, *, d, sparsity, acyclic):
     key, subk = random.split(key)
     
@@ -163,7 +168,14 @@ def make_mask(key, config):
             raise ValueError(f"Unknown random graph structure model: {config['graph']}")
         
         miss_treks = get_all_missing_treks(mask)
-        if config["marg_indeps"] <= len(miss_treks):
+        if len(miss_treks) == 0:
+            continue
+        
+        if config["marg_indeps"] == -1:
+            print(f'missing treks: {len(miss_treks)}')
+            marg_indeps = jnp.array(miss_treks)
+            break
+        elif config["marg_indeps"] <= len(miss_treks):
             key, subk = random.split(key)
             marg_indeps = random.choice(subk, 
                               jnp.array(miss_treks),  # Convert to JAX array
@@ -171,6 +183,28 @@ def make_mask(key, config):
                               replace=False)  # No replacement
             # marg_indeps = miss_treks
             break
+    
+    exp_W = jax.scipy.linalg.expm(mask)
+    trek_W = jnp.dot(exp_W.T, exp_W)
+    print(jnp.where(trek_W == 0, 0, 1))
+    
+    # Convert the adjacency matrix to a graph
+    G = nx.from_numpy_array(mask, create_using=nx.DiGraph())
+    
+    # Plot the graph
+    plt.figure(figsize=(8, 8))
+    
+    # Convert each row in marg_indeps to a string and join them
+    marg_indeps_text = '\n'.join([f'({row[0]}, {row[1]})' for row in marg_indeps])  # Format as pairs
+    
+    # Add the value of marg_indeps to the plot as a text label
+    plt.text(0.5, 0.95, f'marg_indeps:\n{marg_indeps_text}', fontsize=12, ha='center', va='center', transform=plt.gca().transAxes)
+
+
+    nx.draw(G, with_labels=True, node_size=500, node_color='lightblue', font_size=12, font_weight='bold')
+    plt.title("Graph Representation of Adjacency Matrix")
+    plt.show()
+    
     return mask, marg_indeps
 
 
@@ -315,6 +349,7 @@ def synthetic_sde_data(key, config):
     # sample ground truth parameters
     key, subk = random.split(key)
     mask, marg_indeps = make_mask(subk, config)
+    
     key, subk = random.split(key)
     true_theta = make_linear_model_parameters(subk, config, mask)
     

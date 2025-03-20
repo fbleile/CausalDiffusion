@@ -350,9 +350,11 @@ class SDE(ABC):
         # Vectorize computations with jax.vmap
         hsic_values = compute_hsic(marg_indeps[:, 0], marg_indeps[:, 1])
         
-        result = jnp.column_stack([marg_indeps, hsic_values])
+        adapted_marg_indeps = jnp.asarray([marg for marg, hsic in zip(marg_indeps, hsic_values) if hsic == 1])
         
-        return 1 - sum(hsic_values) / len(hsic_values)
+        ratio = 1 - sum(hsic_values) / len(hsic_values)
+        
+        return adapted_marg_indeps, ratio
         
 # # Extract parameters dictionary
 # params = intv_param._store

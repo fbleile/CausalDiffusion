@@ -136,6 +136,8 @@ def wandb_run_algo(key, train_targets, test_targets, config=None, t_init=None, l
     key, subk = random.split(key)
     log_dict["avg_wasser_test"], log_dict["med_wasser_test"], log_dict["full_wasser_test"]= wasserstein_accuracy_test(subk, test_targets, intv_theta_test)
     
+    _, log_dict["dep_ratio"] = model.get_dep_ratio(key, model.param, n_samples=2000)
+    
     print(f"End of run_algo after total walltime: "
           f"{str(datetime.timedelta(seconds=round(time.time() - t_run_algo)))}",
           flush=True)
@@ -148,6 +150,7 @@ def wandb_run_algo(key, train_targets, test_targets, config=None, t_init=None, l
     ]
 
     print(tabulate(table, headers=["Metric", "Train Set", "Test Set"], tablefmt="grid"))
+    print(f"\nDep Ratio: {log_dict['dep_ratio']:.2f}")
     print(f"\nTotal Train Time: {log_dict['train total time']:.3f} s")
     
     return log_dict
@@ -313,7 +316,7 @@ def run_single_config(config_and_key):
     # Unpack the config and PRNG key
     config, key, dataset, model_dim_bandwidth = config_and_key
     
-    train_targets, test_targets, _ = dataset.values()
+    data_key, train_targets, test_targets, _ = dataset.values()
     config["d"] = train_targets.data[0].shape[-1]
 
     # Prepare input for the model
@@ -326,6 +329,7 @@ def run_single_config(config_and_key):
 
     
     model_log = {
+        "data_key": data_key, 
         "model": config["model"],
         "objective_fun": config["objective_fun"],
         "bandwidth": config["bandwidth"],
@@ -385,7 +389,7 @@ def hyperparam_tuning_wandb(seed, data_config_str=None, model_config_str=None):
         for i in range(data_config["n_datasets"]):
             key, subk = random.split(key)
             train_targets, test_targets, meta_data = make_data(key=subk, config=data_config)
-            datasets[i] = {"train_targets": train_targets, "test_targets": test_targets, "meta_data": meta_data}
+            datasets[i] = {"data_key": i, "train_targets": train_targets, "test_targets": test_targets, "meta_data": meta_data}
 
         print("done.\n", flush=True)
 
@@ -422,7 +426,7 @@ if __name__ == "__main__":
     data_config_str = "/Users/bleile/Master/Thesis Work/CausalDiffusion/config/dev/linear20_SCM.yaml"
     model_master_config_str = "/Users/bleile/Master/Thesis Work/CausalDiffusion/config/dev/models.yaml"
     
-    logs = hyperparam_tuning_wandb(113, data_config_str, model_master_config_str)
+    logs = hyperparam_tuning_wandb(118, data_config_str, model_master_config_str)
     
     df = pd.DataFrame(logs)
     df.replace({r'\n': ' ', r'\r': ' '}, regex=True, inplace=True)

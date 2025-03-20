@@ -9,7 +9,7 @@ import jax
 from functools import partial
 import scipy.stats as stats
 
-CROSS_HSIC_TH = stats.norm.ppf(1-0.05) # alpha = 0.05
+CROSS_HSIC_TH = stats.norm.ppf(1-0.01) # alpha = 0.05
 
 @jax.jit
 def RBFkernel(x, y=None, bw=5.0):
@@ -256,7 +256,7 @@ def get_studentized_cross_hsic(XX, YY, kernel_X=None, kernel_Y=None):
     return stat
 
 # Fast HSIC test (already implemented, assuming crossHSIC_test exists)
-def fast_hsic_test(X, Y, kernel_X=None, kernel_Y=None, alpha=0.05):
+def fast_hsic_test(X, Y, kernel_X=None, kernel_Y=None, alpha=0.01):
     assert isinstance(X, jnp.ndarray), "X must be a jnp array"
     assert isinstance(Y, jnp.ndarray), "Y must be a jnp array"
     kernel_X = RBFkernel if kernel_X is None else kernel_X

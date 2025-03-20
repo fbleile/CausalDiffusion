@@ -195,6 +195,8 @@ class KDSMixin(SDE, ABC):
         batch_size=128,
         reg=0.001,
         dep=0.001,
+        adapt_notreks = False,
+        adapt_every = 2000,
         warm_start_intv=True,
         verbose=10,
         k_reg=0.2,
@@ -263,7 +265,7 @@ class KDSMixin(SDE, ABC):
         sharding = PositionalSharding(mesh)
 
         # initialize parameters and load to device (replicate across devices)
-        param = self.init_param(self.n_vars, marg_indeps=marg_indeps)
+        param = self.init_param(self.n_vars, marg_indeps=marg_indeps, adapt_notreks=adapt_notreks)
 
         key, subk = random.split(key)
         intv_param = self.init_intv_param(self.n_vars, n_envs=n_envs, targets=targets,
@@ -298,12 +300,9 @@ class KDSMixin(SDE, ABC):
             select = lambda leaf: jnp.einsum("e,e...", batch_.env_indicator, leaf)
             intv_param_ = tree_map(select, intv_param_)
             intv_param_.targets = tree_map(select, intv_param_.targets)
-            
-            marg_indeps_ = tree_map(select, self.marg_indeps)
-            # print(f'marg_indeps selected: {marg_indeps_}')
 
             # compute mean KDS loss over environments
-            loss = k_reg * loss_fun(batch_.x, param_, intv_param_)
+            loss = k_reg * loss_fun(batch_.x, param_, intv_param_) # 
             assert loss.ndim == 0
 
             # compute any regularizers
@@ -311,7 +310,7 @@ class KDSMixin(SDE, ABC):
             reg_penalty = reg * self.regularize_sparsity(param_) / self.n_vars
             assert reg_penalty.ndim == 0
             
-            dep_penalty = dep * self.regularize_dependence(batch_.x, marg_indeps_, param_, intv_param_)
+            dep_penalty = dep * self.regularize_dependence(batch_.x, param_, intv_param_)
 
             # return loss, aux info dict
             l = loss + reg_penalty + dep_penalty
@@ -383,13 +382,16 @@ class KDSMixin(SDE, ABC):
 
             # update average of training metrics
             logs = update_ave(logs, logs_t)
+            
+            if adapt_notreks and not t % adapt_every and t != 0:
+                self.marg_indeps_adapted, _ = self.get_dep_ratio(key, param)
 
             if verbose and ((not t % log_every and t != 0) or t == steps):
                 t_elapsed = time.time() - t_loop
                 t_loop = time.time()
                 ave_logs = retrieve_ave(logs)
                 logs = defaultdict(float)
-                dep_ratio = self.get_dep_ratio(key, param)
+                _, dep_ratio = self.get_dep_ratio(key, param)
                 print_str = f"step: {t: >5d} " \
                             f"{objective_fun}: {ave_logs['kds_loss']: >12.6f}  | " \
                             f"reg: {ave_logs['reg_penalty']: >12.6f}  | " \

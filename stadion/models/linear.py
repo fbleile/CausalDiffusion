@@ -51,10 +51,11 @@ class LinearSDE(KDSMixin, SDE):
         self.key, subk = random.split(key)
         self.notreks_loss = notreks_loss(self) if dependency_regularizer in ("both", "NO TREKS") else None
         self.no_neighbors = no_neighbors
+        self.marg_indeps_adapted = []
         self.marg_indeps = None
 
 
-    def init_param(self, d, scale=1e-6, fix_speed_scaling=True, marg_indeps=None):
+    def init_param(self, d, scale=1e-6, fix_speed_scaling=True, marg_indeps=None, adapt_notreks = True):
         """
         Samples random initialization of the SDE model parameters.
         See :func:`~stadion.inference.KDSMixin.init_param`.
@@ -70,6 +71,7 @@ class LinearSDE(KDSMixin, SDE):
         param = tree_init_normal(subk, shape, scale=scale)
         
         self.marg_indeps = marg_indeps
+        self.marg_indeps_adapted = self.marg_indeps[0]
         
         diag_idx = jnp.diag_indices(d)
         marg_row_idx, marg_col_idx = marg_indeps_to_indices(self.marg_indeps)
@@ -377,8 +379,10 @@ class LinearSDE(KDSMixin, SDE):
         
         return jnp.sum(jnp.square(W)[i_indices, j_indices])
     
-    def regularize_dependence(self, x, marg_indeps, param, intv_param):
+    def regularize_dependence(self, x, param, intv_param):
         # ``NO TREKS,``Non-Structural``,``both``, ``None``.
+        marg_indeps = self.marg_indeps_adapted
+        
         if self.dependency_regularizer == "None":
             return 0
         elif self.dependency_regularizer == "NO TREKS":
