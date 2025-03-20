@@ -9,7 +9,7 @@ from stadion.crosshsic import get_studentized_cross_hsic, CROSS_HSIC_TH
 
 from stadion.utils import marg_indeps_to_indices
 
-def no_treks(W, scale = 2):
+def no_treks(W, scale = 1):
     exp_W = jax.scipy.linalg.expm(scale * W)
     trek_W = jnp.dot(exp_W.T, exp_W)
     
@@ -52,12 +52,12 @@ def notreks_loss(model, estimator="analytic", abs_func="abs", normalize="norm"):
             jacobian_f_abs = jnp.abs(jacobian_f)
             
             jacobian_sig = jax.jacobian(sigma, argnums=0)(x, *args)
-            jacobian_sig_normed = jnp.linalg.norm(jacobian_sig, axis=1)
+            jacobian_sig_abs = jnp.linalg.norm(jacobian_sig, axis=1)
             
             sig = sigma(x, *args)
             sig_abs = jnp.abs(sig)
             
-            W = 2*jacobian_f_abs.T + jacobian_sig_normed.T + sig_abs
+            W = jacobian_f_abs.T + jacobian_sig_abs.T + sig_abs.T
             
             h = no_treks(W / jnp.linalg.norm(W))
             
